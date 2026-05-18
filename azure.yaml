@@ -1,0 +1,92 @@
+name: blob-transcription
+metadata:
+  template: blob-transcription@0.0.1
+
+# Bicep を IaC プロバイダーとして使用（azd のネイティブサポート）
+infra:
+  provider: bicep
+  path: ./infra
+
+services:
+  functions:
+    project: ./functions
+    host: function
+    language: python
+
+  ui:
+    project: ./ui
+    host: containerapp
+    language: python
+    docker:
+      path: ./Dockerfile
+      context: .
+      remoteBuild: true
+
+hooks:
+  # 閉域リソースへのデプロイのため一時的に Public Access を開放
+  predeploy:
+    posix:
+      shell: sh
+      run: |
+        echo ">>> Temporarily enabling public access for deployment..."
+        FUNC_ID=$(az functionapp show -n "$SERVICE_FUNCTIONS_RESOURCE_NAME" -g "$AZURE_RESOURCE_GROUP" --query id -o tsv 2>/dev/null)
+        if [ -n "$FUNC_ID" ]; then
+          az resource update --ids "$FUNC_ID" --set properties.publicNetworkAccess=Enabled --output none
+        fi
+        az acr update -n "$AZURE_CONTAINER_REGISTRY_NAME" --public-network-enabled true --default-action Allow --output none 2>/dev/null || true
+        FUNC_ST=$(az storage account list -g "$AZURE_RESOURCE_GROUP" --query "[?contains(name,'func')].name | [0]" -o tsv 2>/dev/null)
+        if [ -n "$FUNC_ST" ]; then
+          az storage account update -n "$FUNC_ST" -g "$AZURE_RESOURCE_GROUP" --public-network-access Enabled --default-action Allow --output none
+        fi
+        echo ">>> Configuring UI Container App registry with System Assigned MI..."
+        az containerapp registry set -n "$SERVICE_UI_RESOURCE_NAME" -g "$AZURE_RESOURCE_GROUP" --server "$AZURE_CONTAINER_REGISTRY_ENDPOINT" --identity system --output none 2>/dev/null || true
+        echo ">>> Waiting for network changes to propagate (30s)..."
+        sleep 30
+    windows:
+      shell: pwsh
+      run: |
+        Write-Host ">>> Temporarily enabling public access for deployment..."
+        $funcId = az functionapp show -n $env:SERVICE_FUNCTIONS_RESOURCE_NAME -g $env:AZURE_RESOURCE_GROUP --query id -o tsv 2>$null
+        if ($funcId) {
+          az resource update --ids $funcId --set properties.publicNetworkAccess=Enabled --output none
+        }
+        az acr update -n $env:AZURE_CONTAINER_REGISTRY_NAME --public-network-enabled true --default-action Allow --output none 2>$null
+        $funcSt = az storage account list -g $env:AZURE_RESOURCE_GROUP --query "[?contains(name,'func')].name | [0]" -o tsv 2>$null
+        if ($funcSt) {
+          az storage account update -n $funcSt -g $env:AZURE_RESOURCE_GROUP --public-network-access Enabled --default-action Allow --output none
+        }
+        Write-Host ">>> Configuring UI Container App registry with System Assigned MI..."
+        az containerapp registry set -n $env:SERVICE_UI_RESOURCE_NAME -g $env:AZURE_RESOURCE_GROUP --server $env:AZURE_CONTAINER_REGISTRY_ENDPOINT --identity system --output none 2>$null
+        Write-Host ">>> Waiting for network changes to propagate (30s)..."
+        Start-Sleep -Seconds 30
+
+  # デプロイ完了後に Public Access を閉鎖
+  postdeploy:
+    posix:
+      shell: sh
+      run: |
+        echo ">>> Re-disabling public access after deployment..."
+        FUNC_ID=$(az functionapp show -n "$SERVICE_FUNCTIONS_RESOURCE_NAME" -g "$AZURE_RESOURCE_GROUP" --query id -o tsv 2>/dev/null)
+        if [ -n "$FUNC_ID" ]; then
+          az resource update --ids "$FUNC_ID" --set properties.publicNetworkAccess=Disabled --output none
+        fi
+        az acr update -n "$AZURE_CONTAINER_REGISTRY_NAME" --public-network-enabled false --default-action Deny --output none 2>/dev/null || true
+        FUNC_ST=$(az storage account list -g "$AZURE_RESOURCE_GROUP" --query "[?contains(name,'func')].name | [0]" -o tsv 2>/dev/null)
+        if [ -n "$FUNC_ST" ]; then
+          az storage account update -n "$FUNC_ST" -g "$AZURE_RESOURCE_GROUP" --public-network-access Disabled --default-action Deny --output none
+        fi
+        echo ">>> Public access disabled."
+    windows:
+      shell: pwsh
+      run: |
+        Write-Host ">>> Re-disabling public access after deployment..."
+        $funcId = az functionapp show -n $env:SERVICE_FUNCTIONS_RESOURCE_NAME -g $env:AZURE_RESOURCE_GROUP --query id -o tsv 2>$null
+        if ($funcId) {
+          az resource update --ids $funcId --set properties.publicNetworkAccess=Disabled --output none
+        }
+        az acr update -n $env:AZURE_CONTAINER_REGISTRY_NAME --public-network-enabled false --default-action Deny --output none 2>$null
+        $funcSt = az storage account list -g $env:AZURE_RESOURCE_GROUP --query "[?contains(name,'func')].name | [0]" -o tsv 2>$null
+        if ($funcSt) {
+          az storage account update -n $funcSt -g $env:AZURE_RESOURCE_GROUP --public-network-access Disabled --default-action Deny --output none
+        }
+        Write-Host ">>> Public access disabled."
