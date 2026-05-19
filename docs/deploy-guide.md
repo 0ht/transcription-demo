@@ -502,7 +502,7 @@ Write-Host "`n=== ACR Public Access ==="
 az acr show -n $acrName --query "publicNetworkAccess" -o tsv
 
 Write-Host "`n=== Storage (Data) Public Access ==="
-$stName = az storage account list -g $rg --query "[?contains(name,'data')].name" -o tsv
+$stName = (azd env get-value AZURE_DATA_STORAGE_ACCOUNT_NAME)
 az storage account show -n $stName --query "networkRuleSet.defaultAction" -o tsv
 ```
 
@@ -527,7 +527,7 @@ Event Grid → Queue → Functions → output/processed の流れを検証しま
 ```powershell
 # データ Storage のファイアウォールに自分の IP を許可追加
 $rg = (azd env get-value AZURE_RESOURCE_GROUP)
-$stName = az storage account list -g $rg --query "[?contains(name,'data')].name" -o tsv
+$stName = (azd env get-value AZURE_DATA_STORAGE_ACCOUNT_NAME)
 $myIp = (Invoke-RestMethod -Uri 'https://api.ipify.org')
 
 Write-Host "Adding IP: $myIp to $stName firewall..."
@@ -540,7 +540,7 @@ Write-Host "Done. IP added."
 ```powershell
 # テスト用テキストファイルをアップロード
 $rg = (azd env get-value AZURE_RESOURCE_GROUP)
-$stName = az storage account list -g $rg --query "[?contains(name,'data')].name" -o tsv
+$stName = (azd env get-value AZURE_DATA_STORAGE_ACCOUNT_NAME)
 
 # サンプルテキストファイルを作成
 $testContent = "これはBLOB文字起こしシステムのE2Eテスト用テキストファイルです。`nシステムが正しく動作していれば、このファイルがprocessedコンテナに移動し、outputコンテナにメタデータ付きで出力されます。"
@@ -562,7 +562,7 @@ Write-Host "`nUpload complete. Waiting for processing..."
 ```powershell
 # 処理結果を確認（30秒～2分程度待ってから実行）
 $rg = (azd env get-value AZURE_RESOURCE_GROUP)
-$stName = az storage account list -g $rg --query "[?contains(name,'data')].name" -o tsv
+$stName = (azd env get-value AZURE_DATA_STORAGE_ACCOUNT_NAME)
 
 Write-Host "=== output コンテナ（変換結果） ==="
 az storage blob list --account-name $stName --container-name output --auth-mode login --output table --query "[].{Name:name, Size:properties.contentLength, LastModified:properties.lastModified}" 2>&1
@@ -577,7 +577,7 @@ az storage blob list --account-name $stName --container-name input --auth-mode l
 ```powershell
 # output コンテナの変換結果をダウンロードして内容確認
 $rg = (azd env get-value AZURE_RESOURCE_GROUP)
-$stName = az storage account list -g $rg --query "[?contains(name,'data')].name" -o tsv
+$stName = (azd env get-value AZURE_DATA_STORAGE_ACCOUNT_NAME)
 
 $latestBlob = az storage blob list --account-name $stName --container-name output --auth-mode login --query "sort_by([],&properties.lastModified)[-1].name" -o tsv
 if ($latestBlob) {
@@ -620,7 +620,7 @@ az monitor app-insights query -g $rg `
 ```powershell
 # Queue のメッセージ数を確認（処理待ちキュー）
 $rg = (azd env get-value AZURE_RESOURCE_GROUP)
-$stName = az storage account list -g $rg --query "[?contains(name,'data')].name" -o tsv
+$stName = (azd env get-value AZURE_DATA_STORAGE_ACCOUNT_NAME)
 
 Write-Host "=== blob-events キュー ==="
 az storage queue metadata show --name blob-events --account-name $stName --auth-mode login --output json 2>&1
@@ -640,7 +640,7 @@ az storage queue metadata show --name blob-events --account-name $stName --auth-
 ```powershell
 # テスト用 IP ルールの削除
 $rg = (azd env get-value AZURE_RESOURCE_GROUP)
-$stName = az storage account list -g $rg --query "[?contains(name,'data')].name" -o tsv
+$stName = (azd env get-value AZURE_DATA_STORAGE_ACCOUNT_NAME)
 $myIp = (Invoke-RestMethod -Uri 'https://api.ipify.org')
 
 Write-Host "Removing IP: $myIp from $stName firewall..."
@@ -690,7 +690,7 @@ Streamlit UI の **「📊 処理状況」タブ** で以下が一目で確認�
 ```powershell
 # poison queue の件数を CLI で直接確認
 $rg = (azd env get-value AZURE_RESOURCE_GROUP)
-$stName = az storage account list -g $rg --query "[?contains(name,'data')].name" -o tsv
+$stName = (azd env get-value AZURE_DATA_STORAGE_ACCOUNT_NAME)
 az storage queue exists --name blob-events-poison --account-name $stName --auth-mode login -o tsv
 az storage message peek --queue-name blob-events-poison --account-name $stName --auth-mode login --num-messages 10 -o table 2>&1
 ```

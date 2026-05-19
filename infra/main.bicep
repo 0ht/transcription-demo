@@ -202,3 +202,4 @@ output SERVICE_UI_RESOURCE_NAME string = containerApps.outputs.containerAppName
 output AZURE_CONTAINER_APP_ENVIRONMENT_NAME string = containerApps.outputs.containerAppEnvironmentName
 output AI_SERVICES_ENDPOINT string = ai.outputs.aiServicesEndpoint
 output CONTAINER_APP_URL string = containerApps.outputs.containerAppUrl
+output AZURE_DATA_STORAGE_ACCOUNT_NAME string = storage.outputs.dataStorageAccountName
