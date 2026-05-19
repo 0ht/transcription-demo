@@ -58,25 +58,48 @@ azd up
 
 ## アーキテクチャ概要
 
-```
-Blob Storage (input)  →  Event Grid  →  Storage Queue (blob-events)
-   (Deny + Trusted Services)                  ↓
-           ↑                       Azure Functions (Queue Trigger / Flex Consumption / MI)
-           │                                ↓
-           │                  音声ファイル ─┬─ テキストファイル (.txt/.md/.json/.vtt)
-           │                                │           ↓
-           │              ┌─────────────────┴─────────┐ │ ローカル抽出
-           │              │ AI Services (kind=AIServices, MI)
-           │              │  Speech Batch v3.2 (contentUrls = プレーン blob URL)
-           └──────────────┤  ↑ Trusted Services 経由で Storage を fetch (RBAC)
-                          └────────────────────┬───────┘
-                                               ↓
-                          Blob Storage (output / processed)
-                                               ↓
-                          Container Apps (Streamlit UI / MI)
-                            - input/processed/output 一覧
-                            - blob-events / blob-events-poison メトリクス
-                            - App Insights エラー/例外ログ表示
+```mermaid
+flowchart TB
+    User([👤 ユーザー / 外部システム])
+
+    subgraph Storage["Azure Blob Storage<br/>(PNA=Enabled + Deny + Trusted Services)"]
+        Input[("📥 input")]
+        Output[("📄 output")]
+        Processed[("📦 processed")]
+        Queue[["📨 blob-events Queue"]]
+    end
+
+    EG{{"Event Grid<br/>System Topic"}}
+
+    subgraph Func["Azure Functions<br/>(Flex Consumption / Python / MI)"]
+        QT["Queue Trigger<br/>blob_transcribe"]
+        Branch{ファイル種別}
+        TextExtract["ローカルでテキスト抽出<br/>(.txt/.md/.json/.vtt)"]
+    end
+
+    subgraph AI["AI Services (kind=AIServices, MI)"]
+        Speech["Speech Batch Transcription v3.2<br/>contentUrls = プレーン blob URL<br/>channels=[0] + diarization"]
+    end
+
+    subgraph UI["Container Apps (Streamlit UI / MI)"]
+        Streamlit["📊 input / processed / output 一覧<br/>📨 blob-events / poison メトリクス<br/>❌ App Insights エラー / 例外ログ"]
+    end
+
+    User -->|アップロード| Input
+    Input -->|BlobCreated| EG
+    EG -->|配信| Queue
+    Queue --> QT
+    QT --> Branch
+    Branch -->|音声| Speech
+    Branch -->|テキスト| TextExtract
+    Speech -.->|Trusted Services<br/>(resourceAccessRules + MI RBAC)| Input
+    Speech --> Output
+    TextExtract --> Output
+    QT -->|元ファイル移動| Processed
+    Output --> Streamlit
+    Processed --> Streamlit
+    Queue -.->|キュー状態参照| Streamlit
+    User -->|HTTPS<br/>allowedIpRanges| Streamlit
 ```
 
 ### データストレージへのアクセスパス（閉域構成）
