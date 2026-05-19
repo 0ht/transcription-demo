@@ -60,46 +60,46 @@ azd up
 
 ```mermaid
 flowchart TB
-    User([👤 ユーザー / 外部システム])
+    User([ユーザー / 外部システム])
 
-    subgraph Storage["Azure Blob Storage<br/>(PNA=Enabled + Deny + Trusted Services)"]
-        Input[("📥 input")]
-        Output[("📄 output")]
-        Processed[("📦 processed")]
-        Queue[["📨 blob-events Queue"]]
+    subgraph Storage["Azure Blob Storage / PNA=Enabled + Deny + Trusted Services"]
+        Input[("input")]
+        Output[("output")]
+        Processed[("processed")]
+        Queue[["blob-events Queue"]]
     end
 
-    EG{{"Event Grid<br/>System Topic"}}
+    EG{{"Event Grid System Topic"}}
 
-    subgraph Func["Azure Functions<br/>(Flex Consumption / Python / MI)"]
-        QT["Queue Trigger<br/>blob_transcribe"]
+    subgraph Func["Azure Functions / Flex Consumption / Python / MI"]
+        QT["Queue Trigger: blob_transcribe"]
         Branch{ファイル種別}
-        TextExtract["ローカルでテキスト抽出<br/>(.txt/.md/.json/.vtt)"]
+        TextExtract["ローカルでテキスト抽出 .txt/.md/.json/.vtt"]
     end
 
-    subgraph AI["AI Services (kind=AIServices, MI)"]
-        Speech["Speech Batch Transcription v3.2<br/>contentUrls = プレーン blob URL<br/>channels=[0] + diarization"]
+    subgraph AI["AI Services kind=AIServices, MI"]
+        Speech["Speech Batch v3.2 / contentUrls=plain blob URL / channels=[0] + diarization"]
     end
 
-    subgraph UI["Container Apps (Streamlit UI / MI)"]
-        Streamlit["📊 input / processed / output 一覧<br/>📨 blob-events / poison メトリクス<br/>❌ App Insights エラー / 例外ログ"]
+    subgraph UI["Container Apps / Streamlit UI / MI"]
+        Streamlit["input/processed/output 一覧 / blob-events メトリクス / App Insights 例外表示"]
     end
 
-    User -->|アップロード| Input
-    Input -->|BlobCreated| EG
-    EG -->|配信| Queue
+    User -- アップロード --> Input
+    Input -- BlobCreated --> EG
+    EG -- 配信 --> Queue
     Queue --> QT
     QT --> Branch
-    Branch -->|音声| Speech
-    Branch -->|テキスト| TextExtract
-    Speech -.->|Trusted Services<br/>(resourceAccessRules + MI RBAC)| Input
+    Branch -- 音声 --> Speech
+    Branch -- テキスト --> TextExtract
+    Speech -. Trusted Services / resourceAccessRules + MI RBAC .-> Input
     Speech --> Output
     TextExtract --> Output
-    QT -->|元ファイル移動| Processed
+    QT -- 元ファイル移動 --> Processed
     Output --> Streamlit
     Processed --> Streamlit
-    Queue -.->|キュー状態参照| Streamlit
-    User -->|HTTPS<br/>allowedIpRanges| Streamlit
+    Queue -. キュー状態参照 .-> Streamlit
+    User -- HTTPS / allowedIpRanges --> Streamlit
 ```
 
 ### データストレージへのアクセスパス（閉域構成）
