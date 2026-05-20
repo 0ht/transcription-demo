@@ -81,13 +81,62 @@ graph TB
 | 項目 | 内容 |
 |------|------|
 | AI 基盤 | **Microsoft Foundry プロジェクト**（新型 accounts/projects 子リソース）内の AI Services リソースとして Speech サービスを利用 |
-| サービス | Azure AI Speech (Speech to Text) - Batch Transcription API |
+| サービス | Azure AI Speech (Speech to Text) - Batch Transcription API v3.2 |
 | 言語 | 日本語 (`ja-JP`)。必要に応じて多言語対応を検討 |
-| 話者分離 | **有効**（Diarization）。話者ごとに発話を分離して記録。ステレオ音声でも分離可能にするため、Batch Transcription リクエストで `properties.channels: [0]` を指定し、チャンネル 0 のみを単一チャンネルとして処理する（Speech はマルチチャンネル + diarization の同時利用を許可しないため） |
+| 話者分離 | **Diarization 有効** + `properties.channels: [0]` 指定（詳細は下記「話者分離の方式と設定理由」参照） |
 | Functions ホスティング | Azure Functions Flex Consumption (FC1)。コードデプロイ |
 | 接続方式 | Managed Identity 経由で AI Services エンドポイントにアクセス |
 
 > **構成**: AI Services リソース（`kind=AIServices`, `allowProjectManagement=true`）の子リソースとして Foundry Project（`accounts/projects`）を作成。Hub 不要の新型スタンドアロン構成（API `2025-06-01`）。
+
+#### 話者分離の方式と設定理由
+
+##### 前提知識: 音声のチャンネルと話者識別
+
+音声ファイルは「チャンネル」という独立した音声トラックを持つ。
+
+| 種類 | チャンネル数 | 典型例 |
+|------|--------------|--------|
+| モノラル | 1 | ボイスメモ、電話の片側録音、会議の単一マイク |
+| ステレオ | 2 | 自分=L / 相手=R で録音した PC 会議 |
+| マルチチャンネル | 3 以上 | 多人数会議で 1 人 1 マイクの multi-track 録音 |
+
+Azure Speech Batch Transcription には**話者を識別する 2 つの異なる方式**がある。
+
+| 方式 | 仕組み | 適した録音 |
+|------|--------|------------|
+| **Multi-channel transcription** | 各チャンネルを独立した話者として扱う（L=話者A、R=話者B 固定） | 物理的に話者がチャンネル分離されている録音（コールセンター録音等） |
+| **Diarization** | 音声内容から AI が話者を推定（声紋ベース） | 1 チャンネルに複数人が混在する録音（会議室の単一マイク等） |
+
+そして Speech には次の制約がある:
+
+> ⚠️ **マルチチャンネル処理と Diarization は同時利用不可**
+
+ステレオ音声をそのまま投げて「ステレオ扱いしつつ Diarization もする」はエラーになる。
+
+##### 本システムの設計選択
+
+本システムはユーザーが多様なソース（モノラル / ステレオ / 動画から抽出した音声）をアップロードする前提のため、**入力フォーマットに依らず Diarization で統一的に話者分離する** 方針とした。
+
+そのために Batch Transcription リクエストで以下を指定する。
+
+```jsonc
+{
+  "properties": {
+    "diarizationEnabled": true,
+    "channels": [0]   // 0-origin: L チャンネルのみ処理
+  }
+}
+```
+
+`channels: [0]` を指定する効果:
+
+1. Speech が**強制的にシングルチャンネル処理**として動作する
+2. multi-channel 経路に入らないため **Diarization と共存可能**
+3. ステレオファイルでも L チャンネル（index 0）のみを使用し、AI が声紋で話者推定
+4. モノラルファイルでは元々 ch 0 しかないため安全に動作
+
+> 💡 **将来検討**: コールセンター録音のように「物理的に話者が左右分離されている」用途が増えた場合は、リクエストごとに `channels` 指定の有無を切り替える分岐を入れることで multi-channel 方式も併用可能。
 
 ### 3.4 出力形式
 
