@@ -69,9 +69,12 @@ graph TB
 |----------|--------|----------|
 | 音声 | `.wav`, `.mp3`, `.m4a`, `.ogg`, `.flac`, `.wma` | Azure AI Speech で文字起こし |
 | テキスト | `.txt`, `.md`, `.json`, `.vtt` | テキスト抽出（そのままスクリプトとして保存。`.json` は整形して保存） |
-| 対象外 | 上記以外（`.docx`/`.pdf` を含むバイナリ、動画、画像、ZIP など） | 処理スキップ。ログに記録 |
+| 動画（クライアント側変換） | `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi` | UI のブラウザ内 `ffmpeg.wasm` で音声トラックを **`.mp3` (libmp3lame, 64 kbps mono 16 kHz)** に再エンコード → サーバには音声のみアップロード（サーバ側 FFmpeg 不要） |
+| 対象外 | 上記以外（`.docx`/`.pdf` を含むバイナリ、画像、ZIP など） | 処理スキップ。ログに記録 |
 
-> **注意**: 動画ファイルは現時点では非対応（Flex Consumption プランでは FFmpeg が使用不可）。将来的に Container Apps ホスティングへの移行または Azure Video Indexer 連携で対応予定。
+> **動画対応について**: サーバ側 FFmpeg を持たず（Flex Consumption の制約）、UI 側 Streamlit カスタムコンポーネント (`ui/components/ffmpeg_extractor/`) でブラウザ内変換しています。詳細は [deploy-guide.md](deploy-guide.md) 参照。巨大動画（目安: 500MB 超）はブラウザメモリの制約で失敗する可能性があるため、その場合は Azure Video Indexer 連携を検討します。
+>
+> ⚠️ **出力フォーマットは MP3 固定**: 当初は AAC/m4a を出力していたが、ffmpeg.wasm の native AAC encoder + `ipod` コンテナでは `moov` atom がファイル末尾配置となり Azure Speech Batch Transcription が `InvalidData` で拒否するため、libmp3lame に切り替えました。
 
 ### 3.3 文字起こし処理
 
@@ -132,8 +135,9 @@ graph TB
 ```
 output/
   └── YYYY/MM/DD/
-       ├── {元ファイル名}_transcript.txt
-       └── {元ファイル名}_transcript.json
+       ├── {元ファイル名}_transcript.txt   ← 成功時
+       ├── {元ファイル名}_transcript.json  ← 成功時
+       └── {元ファイル名}_error.json       ← 失敗時のみ（エラー詳細マーカー）
 ```
 
 #### フォルダ構造（processed コンテナ）
@@ -167,9 +171,11 @@ processed/
 | ケース | 処理 |
 |--------|------|
 | 非対応ファイル形式 | 処理スキップ。ログに記録。元ファイルは `input` に残す |
-| 文字起こし失敗 | リトライ（最大 3 回）。失敗時はログ記録し、元ファイルは `input` に残す |
+| 文字起こし失敗（最大 3 回リトライ後も失敗） | **失敗を終端化**: ① `output/<y>/<m>/<d>/<stem>_error.json` にエラー詳細を書き出し、② 元ファイルを `input` → `processed` へ移動、③ キューメッセージは正常 dequeue（poison キュー行きを回避）。UI は `_error.json` を検知して **❌ エラー** として一覧表示（理由付き）。 |
 | 大容量ファイル | Batch Transcription API で非同期処理。タイムアウトなし |
 | 空ファイル / 音声なし | スキップ。ログに「音声コンテンツなし」と記録 |
+
+> **エラーマーカー方式の採用理由**: 旧設計では失敗時に例外を再 raise してキューを poison 行きにしていたが、UI 側の poison メッセージ検知は経路が複雑（Queue peek + ログ突合）で表示の安定性に欠けた。output コンテナにマーカーを書く方式は、UI が Blob を 1 回列挙するだけで確実にエラー一覧化でき、削除も `_error.json` + processed 元ファイルの 2 件削除で完結する。
 
 ## 4. 非機能要件
 
@@ -266,14 +272,18 @@ ACA（Streamlit UI）のフロントエンド Ingress **のみ外部公開**。�
    - テキスト系 → テキスト抽出
    - 音声 → 6 へ
 6. Azure AI Speech Batch Transcription API で文字起こし（話者分離有効）
-7. 結果を txt / JSON で output コンテナに保存
-8. 元ファイルを input → processed コンテナに移動
-9. 処理結果を Application Insights にログ出力
+   - 成功 → 7（成功フロー）
+   - 3 回リトライしても失敗 → 7'（失敗フロー）
+7. 成功フロー: 結果を txt / JSON で output コンテナに保存 → 元ファイルを input → processed へ移動
+7'. 失敗フロー: `_error.json` を output コンテナに書き出し → 元ファイルを input → processed へ移動
+    → キューメッセージは正常 dequeue（poison キュー化を回避）
+8. 処理結果を Application Insights にログ出力
+9. UI は output コンテナを列挙し、`_transcript.json` を ✅ 処理済み、`_error.json` を ❌ エラーとして一覧表示
 ```
 
 ## 7. 今後の拡張検討事項
 
-- [ ] 動画対応（Container Apps ホスティング or Azure Video Indexer 連携）
+- [ ] 大容量動画対応（ブラウザ抽出の限界を超える場合の Azure Video Indexer 連携）
 - [ ] 要約機能（Foundry Project に Azure OpenAI を追加し、文字起こし結果の自動要約）
 - [ ] 感情分析（Foundry Project の AI サービスで通話内容のセンチメント分析）
 - [ ] 多言語対応（英語等の自動言語検出）

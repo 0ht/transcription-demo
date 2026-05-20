@@ -137,6 +137,90 @@ def list_transcripts(date_from=None, date_to=None, keyword=""):
     return sorted(results, key=lambda x: x["path"], reverse=True)
 
 
+def list_errors(date_from=None, date_to=None, keyword=""):
+    """output コンテナから `_error.json` を列挙（最終失敗マーカー）"""
+    svc = get_blob_service()
+    container = svc.get_container_client(CONTAINER_OUTPUT)
+    results = []
+
+    for blob in container.list_blobs():
+        if not blob.name.endswith("_error.json"):
+            continue
+
+        parts = blob.name.split("/")
+        blob_date = None
+        if len(parts) >= 3:
+            try:
+                blob_date = datetime(int(parts[0]), int(parts[1]), int(parts[2]))
+            except (ValueError, IndexError):
+                pass
+
+        if blob_date:
+            if date_from and blob_date.date() < date_from:
+                continue
+            if date_to and blob_date.date() > date_to:
+                continue
+
+        if keyword and keyword.lower() not in blob.name.lower():
+            continue
+
+        results.append({
+            "path": blob.name,
+            "date": blob_date,
+            "size": blob.size,
+            "last_modified": blob.last_modified,
+        })
+
+    return sorted(results, key=lambda x: x["path"], reverse=True)
+
+
+def load_error(path: str) -> dict:
+    """`_error.json` の中身を読み込む"""
+    svc = get_blob_service()
+    data = svc.get_blob_client(CONTAINER_OUTPUT, path).download_blob().readall()
+    return json.loads(data)
+
+
+def delete_output_error(error_path: str) -> list[str]:
+    """エラーマーカーと、それに対応する processed の元ファイルを削除する。
+    削除した blob 名のリストを返す。BlobNotFound は無視。
+    """
+    svc = get_blob_service()
+    deleted: list[str] = []
+
+    # 1) error.json から sourceFile を取得して processed から削除
+    source_file = ""
+    try:
+        meta = load_error(error_path)
+        source_file = meta.get("sourceFile", "")
+    except Exception:
+        pass
+
+    if source_file:
+        # processed のパスは `<y>/<m>/<d>/<basename>` (function_app.py の move_to_processed と同じ)
+        parts = error_path.split("/")
+        prefix = "/".join(parts[:3]) if len(parts) >= 3 else ""
+        from pathlib import Path as _P
+        basename = _P(source_file).name
+        processed_path = f"{prefix}/{basename}" if prefix else basename
+        try:
+            svc.get_blob_client(CONTAINER_PROCESSED, processed_path).delete_blob(delete_snapshots="include")
+            deleted.append(f"processed/{processed_path}")
+        except Exception as e:
+            if "BlobNotFound" not in str(e):
+                raise
+
+    # 2) error.json 自体を削除
+    try:
+        svc.get_blob_client(CONTAINER_OUTPUT, error_path).delete_blob(delete_snapshots="include")
+        deleted.append(f"output/{error_path}")
+    except Exception as e:
+        if "BlobNotFound" not in str(e):
+            raise
+
+    return deleted
+
+
 def load_json(path: str) -> dict:
     svc = get_blob_service()
     data = svc.get_blob_client(CONTAINER_OUTPUT, path).download_blob().readall()

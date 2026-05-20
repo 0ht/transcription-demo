@@ -676,15 +676,16 @@ Streamlit UI の **「📊 処理状況」タブ** で以下が一目で確認�
 | メトリクス / セクション | 内容 |
 |---|---|
 | 📥 処理待ち (input) | `input` コンテナの未処理ファイル件数 |
-| 📨 Queue (blob-events) | 主キュー件数 + **`❌ poison: N`**（リトライ尽きで失敗した件数） |
-| ✅ 処理済み (processed) | `processed` コンテナの件数 |
-| 📄 文字起こし (output) | `output` コンテナの結果ファイル件数 |
-| ❌ 処理失敗・エラー（直近24時間） | poison キュー内のファイル名・失敗時刻 + App Insights の Error/Exception ログ（実際の Speech エラーメッセージが見える） |
+| 📨 Queue (blob-events) | 主キュー件数 + **`❌ poison: N`**（旧経路の残骸用 fallback。新コードでは原則 0） |
+| ✅ 処理済み (processed) | `processed` コンテナの件数（成功・失敗どちらも、終端化された元ファイルが置かれる） |
+| 📄 文字起こし (output) | `output` コンテナの結果ファイル件数（`_transcript.json` / `_transcript.txt` / `_error.json`） |
+| ❌ 処理失敗・エラー | **`output/<y>/<m>/<d>/<stem>_error.json`** の件数（新方式・主経路）+ poison キュー件数（旧方式 fallback）。一覧の各行には Speech からのエラー詳細（例: `InvalidData: The audio format is invalid or cannot be detected`）が直接表示されます。 |
 | 📋 Functions 実行ログ | App Insights から直近1時間のトレース |
 
 **ポイント**:
-- poison queue (`blob-events-poison`) はリトライ上限 (`MAX_RETRIES`) に達したメッセージが自動的に格納される Functions ランタイムの仕組み。Bicep / 手動作成不要。
-- 失敗ファイル名は Event Grid イベント `subject` から自動抽出。
+- **エラー終端化フロー（新方式）**: Functions は最終失敗時に ① `output/<y>/<m>/<d>/<stem>_error.json` を書き出し、② `input` から `processed` へ元ファイルを移動、③ 関数自体は正常終了。これによりキューが poison 行きにならず、UI は output コンテナを 1 回 list するだけで確実にエラー一覧化できます。
+- **削除動作**: UI の一括削除で ❌ エラー行を選ぶと、`_error.json` と `processed` 内の元ファイルの 2 件がまとめて消えます。
+- **poison キュー（旧経路 fallback）**: 旧コードや手動投入したメッセージが残った場合の保険として、`blob-events-poison` の peek も並行して読んでいます。サイドバーに「🗑️ poison キュークリア」ボタンあり。
 - App Insights クエリは `LOG_ANALYTICS_WORKSPACE_ID` 環境変数から動的取得。
 
 ```powershell
@@ -715,6 +716,10 @@ az storage message peek --queue-name blob-events-poison --account-name $stName -
 | MP3 コーデック | **MPEG-1/2 Audio Layer III のみ**（MPEG-2.5 や AAC を `.mp3` 拡張子にしたものは不可） |
 | サンプリングレート | 8 / 16 / 32 / 44.1 / 48 kHz |
 | チャンネル | mono / stereo（diarization 利用時は mono/stereo 推奨） |
+
+> 💡 **動画ファイル (.mp4 / .mov / .mkv / .webm / .avi)** は UI 側のブラウザ内 `ffmpeg.wasm` で **`.mp3` (libmp3lame, 64 kbps mono 16 kHz)** に再エンコードしてからアップロードされます（Streamlit カスタムコンポーネント `ui/components/ffmpeg_extractor/`）。サーバ側に FFmpeg は不要で、Functions Flex Consumption をそのまま使えます。`ffmpeg-core` (~30MB) は自前ホスト（`ui/components/ffmpeg_extractor/frontend/vendor/`）から同一オリジンで配信されるため、CDN 接続不要・閉域ネットワークでも動作します。`SharedArrayBuffer` 対応ブラウザ（モダン Chrome/Edge/Firefox）が必要です。アップロード上限は Streamlit 設定で 1GB (`server.maxUploadSize=1024`, `server.maxMessageSize=1100` MB) に拡張済みですが、ブラウザ内 ffmpeg.wasm のメモリ制約により、**安定動作の実用上限は動画 500MB 程度** が目安です。それを超えるサイズはタブのメモリ次第で失敗する可能性があります。1GB 級を本格的に扱う場合は SAS 直接アップロード方式への変更を検討してください。
+>
+> ⚠️ **なぜ MP3 か（AAC/m4a を採用しない理由）**: ffmpeg.wasm 同梱の native AAC encoder + `ipod` コンテナ（`.m4a` 出力）では、`moov` atom がファイル末尾に配置され（`+faststart` 相当なし）、Azure Speech Batch Transcription が `InvalidData: The audio format is invalid or cannot be detected` で拒否します。libmp3lame はコンテナ atom 概念がなくストリーム解析できるため、Speech 側に確実に受け入れられます。
 
 ### `InvalidData: The recordings URI contains invalid data` の原因切り分け
 

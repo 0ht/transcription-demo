@@ -11,6 +11,8 @@ import urllib.parse
 
 import streamlit as st
 
+from components.ffmpeg_extractor import ffmpeg_extract
+
 from blob_service import (
     AUDIO_EXTS,
     VIDEO_EXTS,
@@ -18,7 +20,9 @@ from blob_service import (
     list_transcripts,
     list_input_files,
     list_processed_files,
+    list_errors,
     load_json,
+    load_error,
     load_media,
     load_text,
     speaker_color,
@@ -30,6 +34,7 @@ from blob_service import (
     delete_poison_message_by_blob,
     delete_input_blob,
     delete_output_transcript,
+    delete_output_error,
 )
 
 
@@ -150,12 +155,42 @@ def build_file_list(date_from, date_to, keyword):
     except Exception as e:
         st.error(f"output 取得エラー: {e}")
 
-    # 2) ❌ エラー（poison キュー）- 処理済みに無いもののみ
+    # 2) ❌ エラー（output の _error.json）- 最終失敗マーカー
+    #    Functions が最終失敗時に書き出すマーカー。input → processed への移動も
+    #    Functions 側で完了済みなので、これがあれば確実にエラー終端済み。
+    try:
+        for e in list_errors(date_from=date_from, date_to=date_to, keyword=keyword):
+            err_path = e["path"]
+            try:
+                meta = load_error(err_path)
+            except Exception:
+                meta = {}
+            source = meta.get("sourceFile") or os.path.basename(err_path).replace("_error.json", "")
+            stem = os.path.splitext(source)[0]
+            if source in files or stem in files:
+                continue
+            reason = meta.get("error", "") or "(原因不明)"
+            err_type = meta.get("errorType", "")
+            parts = err_path.split("/")
+            date_str = "/".join(parts[:3]) if len(parts) >= 3 else ""
+            files[source] = {
+                "name": source,
+                "date": date_str,
+                "status": "❌ エラー",
+                "status_detail": f"{err_type}: {reason}" if err_type else reason,
+                "transcript_path": None,
+                "error_path": err_path,
+                "last_modified": e.get("last_modified"),
+            }
+    except Exception as e:
+        st.warning(f"エラーマーカー取得エラー: {e}")
+
+    # 3) ❌ エラー（poison キュー）- 旧経路の互換用フォールバック
     for m in poison_msgs:
         blob_name = m.get("blob_name") or ""
         if not blob_name:
             continue
-        # 既に処理済みリストにある場合はスキップ（古い poison が残っているケース）
+        # 既に処理済み or error.json で登録済みならスキップ
         stem = os.path.splitext(blob_name)[0]
         if blob_name in files or stem in files:
             continue
@@ -178,7 +213,7 @@ def build_file_list(date_from, date_to, keyword):
             "last_modified": ins,
         }
 
-    # 3) ⏳ 処理待ち（input）- 処理済み・エラーに無いもののみ
+    # 4) ⏳ 処理待ち（input）- 処理済み・エラーに無いもののみ
     try:
         for f in list_input_files():
             name = f["name"]
@@ -220,6 +255,38 @@ with st.sidebar:
     st.header("📤 アップロード")
     st.caption("対応形式: " + ", ".join(sorted(ALL_SUPPORTED_EXTS)))
 
+    # -----------------------------------------------------------------
+    # 動画 → 音声抽出 (ブラウザ内 ffmpeg.wasm)
+    # -----------------------------------------------------------------
+    with st.expander("🎬 動画ファイルから音声を抽出（任意）", expanded=False):
+        st.caption(
+            "動画 (" + ", ".join(sorted(VIDEO_EXTS)) + ") をブラウザ内で .mp3 に変換し、"
+            "下のアップロード欄に自動で追加します。サーバへは音声のみが送信されます。"
+        )
+        extracted = ffmpeg_extract(key="video_to_audio", height=380)
+        if extracted is not None:
+            ex_name, ex_bytes = extracted
+            # 同じファイルの再受信を避けるため session_state で重複排除
+            sig = (ex_name, len(ex_bytes))
+            if st.session_state.get("_last_extracted_sig") != sig:
+                st.session_state["_last_extracted_sig"] = sig
+                pending = st.session_state.get("extracted_audios", [])
+                pending.append({"name": ex_name, "data": ex_bytes})
+                st.session_state["extracted_audios"] = pending
+                st.rerun()
+
+    extracted_audios = st.session_state.get("extracted_audios", [])
+    if extracted_audios:
+        st.success(f"🎵 抽出済み音声: {len(extracted_audios)} 件（下のアップロード対象に追加されます）")
+        for i, a in enumerate(extracted_audios):
+            cols = st.columns([5, 1])
+            cols[0].text(f"✅ {a['name']} ({a['data'].__len__():,} B)")
+            if cols[1].button("✖", key=f"rm_ex_{i}", help="この抽出済み音声を破棄"):
+                extracted_audios.pop(i)
+                st.session_state["extracted_audios"] = extracted_audios
+                st.session_state.pop("_last_extracted_sig", None)
+                st.rerun()
+
     # ブラウザのファイル選択ダイアログで拡張子フィルター（先頭ドット除去）
     accepted_types = [e.lstrip(".") for e in sorted(ALL_SUPPORTED_EXTS)]
     uploaded_files = st.file_uploader(
@@ -229,20 +296,23 @@ with st.sidebar:
         key=f"uploader_{st.session_state.get('upload_counter', 0)}",
     )
 
-    if uploaded_files:
-        # 拡張子チェック（二重防御）
+    if uploaded_files or extracted_audios:
+        # 通常アップロード分の拡張子チェック（二重防御）
         valid_files = []
         invalid_files = []
-        for uf in uploaded_files:
+        for uf in uploaded_files or []:
             ext = Path(uf.name).suffix.lower()
             if ext in ALL_SUPPORTED_EXTS:
                 valid_files.append(uf)
             else:
                 invalid_files.append(uf)
 
-        st.write(f"**{len(uploaded_files)} 件選択中:**")
+        total_selected = len(uploaded_files or []) + len(extracted_audios)
+        st.write(f"**{total_selected} 件アップロード対象:**")
         for uf in valid_files:
             st.text(f"✅ {uf.name} ({uf.size:,} B)")
+        for a in extracted_audios:
+            st.text(f"🎬→🎵 {a['name']} ({len(a['data']):,} B)")
         for uf in invalid_files:
             st.text(f"❌ {uf.name} (非対応)")
 
@@ -250,29 +320,45 @@ with st.sidebar:
             st.error(f"❌ 非対応ファイルが {len(invalid_files)} 件含まれています。アップロードできません。")
 
         # 非対応ファイルが1つでもあればボタンを無効化
+        has_any = bool(valid_files) or bool(extracted_audios)
         if st.button(
             "🚀 アップロード実行",
             type="primary",
             use_container_width=True,
-            disabled=bool(invalid_files) or not valid_files,
+            disabled=bool(invalid_files) or not has_any,
         ):
             success_count = 0
             error_count = 0
+            total = len(valid_files) + len(extracted_audios)
             progress = st.progress(0)
-            for i, uf in enumerate(valid_files):
+            done = 0
+            for uf in valid_files:
                 try:
                     upload_to_input(uf.name, uf.getvalue())
                     success_count += 1
                 except Exception as e:
                     st.error(f"❌ {uf.name}: {e}")
                     error_count += 1
-                progress.progress((i + 1) / len(valid_files))
+                done += 1
+                progress.progress(done / total)
+            for a in extracted_audios:
+                try:
+                    upload_to_input(a["name"], a["data"])
+                    success_count += 1
+                except Exception as e:
+                    st.error(f"❌ {a['name']}: {e}")
+                    error_count += 1
+                done += 1
+                progress.progress(done / total)
 
             if success_count:
                 st.success(f"✅ {success_count} 件アップロード完了")
             if error_count:
                 st.warning(f"⚠️ {error_count} 件失敗")
 
+            # アップロード済みの抽出音声はクリア
+            st.session_state["extracted_audios"] = []
+            st.session_state.pop("_last_extracted_sig", None)
             st.session_state["upload_counter"] = st.session_state.get("upload_counter", 0) + 1
             st.rerun()
 
@@ -291,6 +377,13 @@ with st.sidebar:
         _poison_names = set()
         poison_count = 0
 
+    # output 側のエラーマーカー数（新しい失敗経路）
+    try:
+        _error_markers = list_errors()
+        error_marker_count = len(_error_markers)
+    except Exception:
+        error_marker_count = 0
+
     try:
         _input_files = list_input_files()
         # poison に含まれるものは「エラー」として扱い、処理待ちからは除外
@@ -301,11 +394,12 @@ with st.sidebar:
         st.metric("⏳ 処理待ち", "取得エラー")
 
     try:
-        st.metric("❌ エラー", f"{poison_count} 件",
-                  help="リトライ尽きで処理失敗したファイル数（poison キュー）")
+        total_errors = poison_count + error_marker_count
+        st.metric("❌ エラー", f"{total_errors} 件",
+                  help="最終失敗したファイル数（output の _error.json + poison キュー）")
         if poison_count > 0:
-            if st.button("🗑️ エラークリア", key="clear_poison", use_container_width=True,
-                         help="poison キューの全メッセージを削除"):
+            if st.button("🗑️ poison キュークリア", key="clear_poison", use_container_width=True,
+                         help="poison キューの全メッセージを削除（旧経路の残骸処理）"):
                 try:
                     clear_poison_queue()
                     st.success("✅ クリアしました")
@@ -350,6 +444,16 @@ def _delete_one(item: dict) -> tuple[bool, str]:
                 delete_output_transcript(item["transcript_path"])
             return True, name
         elif status.startswith("❌"):
+            # 新方式: output の _error.json があればそれを削除（processed の元ファイルも）
+            err_path = item.get("error_path")
+            if err_path:
+                try:
+                    delete_output_error(err_path)
+                except Exception as e:
+                    if "BlobNotFound" not in str(e):
+                        raise
+                return True, name
+            # 旧方式: poison キュー + input blob のフォールバック
             try:
                 delete_poison_message_by_blob(name)
             except Exception:

@@ -224,6 +224,27 @@ def save_results(blob_name: str, result: dict) -> dict:
     return {"json": json_path, "txt": txt_path}
 
 
+def save_error(blob_name: str, error: BaseException) -> str:
+    """最終失敗時にエラーマーカー JSON を output コンテナへ書き出す。
+    UI 側はこの `_error.json` を検知して ❌ エラーとして一覧表示する。
+    """
+    prefix = _output_prefix(blob_name)
+    svc = _blob_svc()
+    err_path = f"{prefix}_error.json"
+    payload = {
+        "sourceFile": blob_name,
+        "processedAt": datetime.now(timezone.utc).isoformat(),
+        "errorType": type(error).__name__,
+        "error": str(error)[:2000],
+    }
+    svc.get_blob_client(CONTAINER_OUTPUT, err_path).upload_blob(
+        json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+        overwrite=True,
+    )
+    logging.info("Saved error marker: %s", err_path)
+    return err_path
+
+
 def move_to_processed(blob_name: str) -> str:
     """元ファイルを input → processed へ移動"""
     now = datetime.now(timezone.utc)
@@ -302,4 +323,16 @@ def blob_transcribe(msg: func.QueueMessage):
     logging.error(
         "All %d attempts failed for %s: %s", MAX_RETRIES, blob_name, last_error
     )
-    raise last_error
+    # エラーマーカーを output に書き、input → processed へ移動して終端化する。
+    # これにより:
+    #   - キューは正常完了扱いで dequeue され、poison キューに溜まらない
+    #   - input から消えるため UI で「処理待ち」に残らない
+    #   - output の `_error.json` を UI が ❌ エラー として表示できる
+    try:
+        save_error(blob_name, last_error)
+    except Exception as exc:
+        logging.error("Failed to save error marker for %s: %s", blob_name, exc)
+    try:
+        move_to_processed(blob_name)
+    except Exception as exc:
+        logging.error("Failed to move failed blob %s to processed: %s", blob_name, exc)
