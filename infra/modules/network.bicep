@@ -63,16 +63,18 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
 
 // Private DNS Zones
 var dnsZones = {
-  blob: 'privatelink.blob.core.windows.net'
-  queue: 'privatelink.queue.core.windows.net'
-  table: 'privatelink.table.core.windows.net'
+  blob: 'privatelink.blob.${az.environment().suffixes.storage}'
+  queue: 'privatelink.queue.${az.environment().suffixes.storage}'
+  table: 'privatelink.table.${az.environment().suffixes.storage}'
   functions: 'privatelink.azurewebsites.net'
   cognitive: 'privatelink.cognitiveservices.azure.com'
+  openai: 'privatelink.openai.azure.com'
   acr: 'privatelink.azurecr.io'
   monitor: 'privatelink.monitor.azure.com'
   oms: 'privatelink.oms.opinsights.azure.com'
   ods: 'privatelink.ods.opinsights.azure.com'
   agentsvc: 'privatelink.agentsvc.azure-automation.net'
+  search: 'privatelink.search.windows.net'
 }
 
 resource privateDnsZones 'Microsoft.Network/privateDnsZones@2024-06-01' = [
@@ -112,8 +114,10 @@ output privateDnsZoneQueueId string = privateDnsZones[indexOf(dnsZoneKeys, 'queu
 output privateDnsZoneTableId string = privateDnsZones[indexOf(dnsZoneKeys, 'table')].id
 output privateDnsZoneFunctionsId string = privateDnsZones[indexOf(dnsZoneKeys, 'functions')].id
 output privateDnsZoneCognitiveId string = privateDnsZones[indexOf(dnsZoneKeys, 'cognitive')].id
+output privateDnsZoneOpenAIId string = privateDnsZones[indexOf(dnsZoneKeys, 'openai')].id
 output privateDnsZoneAcrId string = privateDnsZones[indexOf(dnsZoneKeys, 'acr')].id
 output privateDnsZoneMonitorId string = privateDnsZones[indexOf(dnsZoneKeys, 'monitor')].id
 output privateDnsZoneOmsId string = privateDnsZones[indexOf(dnsZoneKeys, 'oms')].id
 output privateDnsZoneOdsId string = privateDnsZones[indexOf(dnsZoneKeys, 'ods')].id
 output privateDnsZoneAgentsvcId string = privateDnsZones[indexOf(dnsZoneKeys, 'agentsvc')].id
+output privateDnsZoneSearchId string = privateDnsZones[indexOf(dnsZoneKeys, 'search')].id

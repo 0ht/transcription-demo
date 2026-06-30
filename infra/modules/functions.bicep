@@ -63,7 +63,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
       deployment: {
         storage: {
           type: 'blobContainer'
-          value: 'https://${functionsStorageAccountName}.blob.core.windows.net/deploymentpackage'
+          value: 'https://${functionsStorageAccountName}.blob.${az.environment().suffixes.storage}/deploymentpackage'
           authentication: {
             type: 'SystemAssignedIdentity'
           }
@@ -83,8 +83,8 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'AzureWebJobsStorage__accountName', value: functionsStorageAccountName }
         { name: 'AzureWebJobsStorage__credential', value: 'managedidentity' }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: applicationInsightsConnectionString }
-        { name: 'DataStorage__queueServiceUri', value: 'https://${dataStorageAccountName}.queue.core.windows.net' }
-        { name: 'DataStorage__blobServiceUri', value: 'https://${dataStorageAccountName}.blob.core.windows.net' }
+        { name: 'DataStorage__queueServiceUri', value: 'https://${dataStorageAccountName}.queue.${az.environment().suffixes.storage}' }
+        { name: 'DataStorage__blobServiceUri', value: 'https://${dataStorageAccountName}.blob.${az.environment().suffixes.storage}' }
         { name: 'DATA_STORAGE_ACCOUNT_NAME', value: dataStorageAccountName }
         { name: 'DATA_STORAGE_CONTAINER_INPUT', value: 'input' }
         { name: 'DATA_STORAGE_CONTAINER_OUTPUT', value: 'output' }

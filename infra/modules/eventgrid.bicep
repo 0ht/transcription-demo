@@ -4,11 +4,6 @@
 param projectName string
 param environment string
 param dataStorageAccountId string
-param dataStorageAccountName string
-
-resource dataStorage 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
-  name: dataStorageAccountName
-}
 
 resource systemTopic 'Microsoft.EventGrid/systemTopics@2024-06-01-preview' = {
   name: 'evgt-blob-${projectName}-${environment}'

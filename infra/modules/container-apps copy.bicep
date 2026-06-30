@@ -14,18 +14,17 @@ param acrLoginServer string
 param acrId string
 param allowedIpRanges array
 
-param azureOpenAIEndpoint string
-param azureOpenAIId string
-param azureOpenAIChatDeployment string
-param azureOpenAIEmbeddingDeployment string
-param azureOpenAIApiVersion string
+param azureOpenAIEndpoint string  
+param azureOpenAIId string  
+param azureOpenAIChatDeployment string  
+param azureOpenAIApiVersion string  
+  
+param azureSearchEndpoint string  
+param azureSearchId string  
+param azureSearchIndexName string  
+param azureSearchSemanticConfig string  
+param readFields string = 'content'  
 
-param azureSearchEndpoint string
-param azureSearchId string
-param azureSearchPrincipalId string
-param azureSearchIndexName string
-param azureSearchSemanticConfig string
-param readFields string = 'content'
 
 // Microsoft 公式 exists パターン:
 // 既存 Container App が存在する場合は前回 image を引き継ぎ、registries 設定も投入する。
@@ -102,14 +101,8 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
           }
         ]
       }
-      // registries 設定は azd の predeploy hook で `az containerapp registry set --identity system`
-      // により CLI 経由で投入する（OCR-Demo パターン）。Bicep 側で常時登録すると、AcrPull
-      // ロール割り当てとの並列デプロイで伝播待ちが発生し Container App の起動が
-      // "Operation expired" でタイムアウトする。
-      // - 初回 (uiExists=false): registries 空 + placeholder 公開イメージで起動 → predeploy が
-      //   ACR public 化 + registry set → azd deploy が image 更新 → postdeploy で ACR 閉鎖
-      // - 2回目以降 (uiExists=true): Bicep 側でも registries を冪等に登録し、再 provision でも
-      //   設定がドリフトしない
+      // 初回 (uiExists=false) は ACR registry を登録しない。
+      // ACA プラットフォームによる AcrPull 認証検証が走らず、公開イメージ pull のみで起動できる。
       registries: uiExists ? [
         {
           server: acrLoginServer
@@ -138,15 +131,16 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'CONTAINER_PROCESSED', value: 'processed' }
             { name: 'LOG_ANALYTICS_WORKSPACE_ID', value: logAnalyticsWorkspaceId }
 
-            { name: 'AZURE_OPENAI_ENDPOINT', value: azureOpenAIEndpoint }
-            { name: 'AZURE_OPENAI_CHAT_DEPLOYMENT', value: azureOpenAIChatDeployment }
-            { name: 'AZURE_OPENAI_EMBEDDING_DEPLOYMENT', value: azureOpenAIEmbeddingDeployment }
-            { name: 'AZURE_OPENAI_API_VERSION', value: azureOpenAIApiVersion }
-
-            { name: 'AZURE_SEARCH_ENDPOINT', value: azureSearchEndpoint }
-            { name: 'AZURE_SEARCH_INDEX_NAME', value: azureSearchIndexName }
-            { name: 'AZURE_SEARCH_SEMANTIC_CONFIG', value: azureSearchSemanticConfig }
-            { name: 'READ_FIELDS', value: readFields }
+            { name: 'AZURE_OPENAI_ENDPOINT', value: azureOpenAIEndpoint }  
+            { name: 'AZURE_OPENAI_CHAT_DEPLOYMENT', value: azureOpenAIChatDeployment }   
+            { name: 'AZURE_OPENAI_API_VERSION', value: azureOpenAIApiVersion }  
+              
+            { name: 'AZURE_SEARCH_ENDPOINT', value: azureSearchEndpoint }  
+            { name: 'AZURE_SEARCH_INDEX_NAME', value: azureSearchIndexName }  
+            { name: 'AZURE_SEARCH_SEMANTIC_CONFIG', value: azureSearchSemanticConfig }  
+            { name: 'READ_FIELDS', value: readFields }  
+                      
+          
           ]
         }
       ]
@@ -211,67 +205,34 @@ resource acaAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 }
 
 // RBAC: Container App → Azure OpenAI (Cognitive Services OpenAI User)
-resource openAIResource 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = {
-  name: last(split(azureOpenAIId, '/'))
-}
+resource openAIResource 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = {  
+  name: last(split(azureOpenAIId, '/'))  
+}  
 
-resource acaOpenAIUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(azureOpenAIId, containerApp.id, 'Cognitive Services OpenAI User')
-  scope: openAIResource
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
-    principalId: containerApp.identity.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
+resource acaOpenAIUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {  
+  name: guid(azureOpenAIId, containerApp.id, 'Cognitive Services OpenAI User')  
+  scope: openAIResource  
+  properties: {  
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')  
+    principalId: containerApp.identity.principalId  
+    principalType: 'ServicePrincipal'  
+  }  
+}  
+  // RBAC: Container App → Azure AI Search (Search Index Data Reader)
+resource searchResource 'Microsoft.Search/searchServices@2023-11-01' existing = {  
+  name: last(split(azureSearchId, '/'))  
+}  
 
-// RBAC: Container App → Azure AI Search (Search Index Data Reader)
-resource searchResource 'Microsoft.Search/searchServices@2023-11-01' existing = {
-  name: last(split(azureSearchId, '/'))
-}
+resource acaSearchIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {  
+  name: guid(azureSearchId, containerApp.id, 'Search Index Data Reader')  
+  scope: searchResource  
+  properties: {  
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '1407120a-92aa-4202-b7e9-c0e197c71c8f')  
+    principalId: containerApp.identity.principalId  
+    principalType: 'ServicePrincipal'  
+  }  
+}  
 
-resource acaSearchIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(azureSearchId, containerApp.id, 'Search Index Data Reader')
-  scope: searchResource
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '1407120a-92aa-4202-b7e9-c0e197c71c8f')
-    principalId: containerApp.identity.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// RBAC: Container App → Azure AI Search (Search Index Data Contributor) — ドキュメント登録/削除用
-resource acaSearchIndexContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(azureSearchId, containerApp.id, 'Search Index Data Contributor')
-  scope: searchResource
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8ebe5a00-799e-43f5-93ac-243d3dce84a7')
-    principalId: containerApp.identity.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// RBAC: Container App → Azure AI Search (Search Service Contributor) — インデックス作成/管理用
-resource acaSearchServiceContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(azureSearchId, containerApp.id, 'Search Service Contributor')
-  scope: searchResource
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7ca78c08-252a-4471-8644-bb5ff32d4ba0')
-    principalId: containerApp.identity.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// RBAC: Azure AI Search → Azure OpenAI (Cognitive Services OpenAI User) — クエリ時の統合ベクトル化用
-resource acaSearchOpenAIUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(azureOpenAIId, azureSearchId, 'Cognitive Services OpenAI User')
-  scope: openAIResource
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
-    principalId: azureSearchPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
 
 output containerAppName string = containerApp.name
 output containerAppEnvironmentName string = cae.name

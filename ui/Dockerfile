@@ -1,4 +1,5 @@
-FROM python:3.11-slim
+# Docker Hub の匿名 pull レート制限回避のため Microsoft Container Registry ミラーを使用
+FROM mcr.microsoft.com/devcontainers/python:3.11-bookworm
 
 # 非 root ユーザーで実行（CIS Benchmark 推奨）
 # UID 10001 は host UID と衝突しにくい高めの値を選択

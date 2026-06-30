@@ -13,6 +13,21 @@ import streamlit as st
 
 from components.ffmpeg_extractor import ffmpeg_extract
 
+# RAG（AIに質問）機能 — Azure OpenAI / AI Search の設定が揃っている場合のみ利用可能。
+try:
+    from config import RAG_ENABLED
+    if RAG_ENABLED:
+        from search_service import search_transcripts
+        from index_service import ensure_index, index_transcript, delete_transcript_docs
+        from llm import (
+            summarize_current_call,
+            summarize_question_intent,
+            generate_search_query_from_intent,
+            answer_with_context,
+        )
+except Exception:
+    RAG_ENABLED = False
+
 from blob_service import (
     AUDIO_EXTS,
     VIDEO_EXTS,
@@ -62,6 +77,22 @@ st.markdown(
     }
     div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:last-child {
         border-right: none;
+    }
+    /* RAG 質問入力欄が固定高さコンテナ(st.container(height=600))内で
+       高さ0に潰れる Streamlit の不具合への対処。
+       st-key-rag_question 配下の高さを明示的に復元する。 */
+    .st-key-rag_question,
+    .st-key-rag_question div[data-testid="stTextArea"],
+    .st-key-rag_question div[data-testid="stTextAreaRootElement"] {
+        height: auto !important;
+        min-height: 130px !important;
+        overflow: visible !important;
+    }
+    .st-key-rag_question textarea {
+        min-height: 120px !important;
+        border: 1px solid rgba(120, 120, 120, 0.55);
+        border-radius: 6px;
+        background: #ffffff;
     }
     /* ファイル名リンク（完了ファイル） */
     a.file-link {
@@ -676,3 +707,122 @@ with detail_container:
                 f"{text}</div>",
                 unsafe_allow_html=True,
             )
+
+        # ===================================================================
+        # RAG: この文字起こし内容について AI に質問
+        # （Azure OpenAI / AI Search の設定が揃っている場合のみ表示）
+        # ===================================================================
+        if RAG_ENABLED:
+            st.divider()
+            st.markdown("#### 💬 AIに質問")
+
+            st.caption(
+                "質問する前に、この文字起こしを検索インデックスに登録してください。"
+                "内容を更新した場合は再登録できます。"
+            )
+            if st.button("📥 このファイルをインデックスに登録", use_container_width=True):
+                try:
+                    with st.spinner("インデックスを準備中..."):
+                        created = ensure_index()
+                    if created:
+                        st.info("検索インデックスを新規作成しました。")
+                    with st.spinner("既存の登録を整理中..."):
+                        delete_transcript_docs(json_path)
+                    with st.spinner("チャンク化・ベクトル化して登録中..."):
+                        n = index_transcript(transcript, json_path)
+                    if n > 0:
+                        st.success(f"インデックスに {n} 件のチャンクを登録しました。")
+                    else:
+                        st.warning("登録できるテキストがありませんでした。")
+                except Exception as e:
+                    st.error(f"インデックス登録に失敗しました: {e}")
+
+            rag_q = st.text_area(
+                "この文字起こし内容について質問",
+                placeholder="例: この会議で決まったアクションアイテムは？",
+                height=120,
+                key="rag_question",
+            )
+
+            rag_col1, rag_col2, rag_col3 = st.columns([2, 2, 2])
+            search_mode = rag_col1.selectbox(
+                "検索方式",
+                ["semantic_hybrid", "hybrid", "vector", "keyword"],
+                index=0,
+                key="rag_search_mode",
+            )
+            top_k = rag_col2.slider("検索件数", min_value=3, max_value=10, value=5, key="rag_top_k")
+            use_query_rewrite = rag_col3.checkbox("検索語をAIで最適化", value=True, key="rag_rewrite")
+
+            if st.button("🤖 回答生成", type="primary", use_container_width=True):
+                if not rag_q.strip():
+                    st.warning("質問を入力してください。")
+                else:
+                    try:
+                        transcript_path = json_path
+
+                        transcript_text = "\n".join(
+                            f"{seg.get('speaker', 'Unknown')}: {seg.get('text', '')}"
+                            for seg in transcript.get("segments", [])
+                        )
+
+                        with st.spinner("現在の通話内容を整理中..."):
+                            current_call_summary = summarize_current_call(transcript_text[:12000])
+
+                        intent_summary = ""
+                        if use_query_rewrite:
+                            with st.spinner("質問意図を整理中..."):
+                                intent_summary = summarize_question_intent(rag_q)
+                            with st.spinner("検索クエリを生成中..."):
+                                final_query = generate_search_query_from_intent(
+                                    rag_q, intent_summary, current_call_summary
+                                )
+                        else:
+                            final_query = rag_q
+
+                        st.markdown("##### 現在通話の要約")
+                        st.write(current_call_summary)
+
+                        if intent_summary:
+                            st.markdown("##### 意図サマリ")
+                            st.write(intent_summary)
+
+                        st.caption(f"検索クエリ: {final_query}")
+
+                        with st.spinner("Azure AI Search を検索中..."):
+                            contexts = search_transcripts(
+                                query=final_query,
+                                mode=search_mode,
+                                top=top_k,
+                                source_file=source_file,
+                                transcript_path=transcript_path,
+                            )
+
+                        if not contexts:
+                            st.info("関連する検索結果が見つかりませんでした。")
+                        else:
+                            with st.spinner("Azure OpenAI で回答生成中..."):
+                                answer = answer_with_context(rag_q, contexts, current_call_summary)
+
+                            st.markdown("##### 回答")
+                            st.write(answer)
+
+                            with st.expander("根拠に使った検索結果"):
+                                for i, c in enumerate(contexts, 1):
+                                    title = c.get("source_file", "") or c.get("title", "") or f"doc-{i}"
+                                    st.markdown(f"**[{i}] {title}**")
+
+                                    meta = []
+                                    if c.get("speaker"):
+                                        meta.append(f"speaker: {c['speaker']}")
+                                    if c.get("start_time"):
+                                        meta.append(f"time: {c['start_time']}")
+                                    if meta:
+                                        st.caption(" / ".join(meta))
+
+                                    content = c.get("content", "") or c.get("chunk", "")
+                                    st.write(content)
+                                    st.divider()
+
+                    except Exception as e:
+                        st.error(f"RAG回答の生成に失敗しました: {e}")

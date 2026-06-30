@@ -17,16 +17,8 @@ param speechLanguage string = 'ja-JP'
 param allowedIpRanges array = []
 
 // azd が自動設定するパラメータ
-@description('azd 実行者の Entra ID オブジェクト ID。空の場合はデプロイ者に RBAC を付与しない。')
+#disable-next-line no-unused-params
 param principalId string = ''
-
-@description('principalId の種別。デフォルト User、CI では ServicePrincipal。')
-@allowed([
-  'User'
-  'ServicePrincipal'
-  'Group'
-])
-param principalType string = 'User'
 
 @description('UI Container App が既存リソースとして存在するか。azd が SERVICE_UI_RESOURCE_EXISTS から自動セット。初回 false→公開イメージで作成、2回目以降 true→既存 ACR イメージを引き継ぐ。')
 param uiExists bool = false
@@ -99,6 +91,7 @@ module ai 'modules/ai.bicep' = {
     tags: tags
     subnetPrivateEndpointsId: network.outputs.subnetPrivateEndpointsId
     privateDnsZoneCognitiveId: network.outputs.privateDnsZoneCognitiveId
+    privateDnsZoneOpenAIId: network.outputs.privateDnsZoneOpenAIId
     dataStorageAccountId: storage.outputs.dataStorageAccountId
   }
 }
@@ -138,9 +131,11 @@ module functions 'modules/functions.bicep' = {
     aiServicesId: ai.outputs.aiServicesId
     applicationInsightsConnectionString: monitoring.outputs.applicationInsightsConnectionString
     speechLanguage: speechLanguage
-    // サフィックスは functions.bicep 側で uniqueString(resourceGroup().id) から生成されるため、
-    // 同一 RG で再 provision しても Function App 名は一意に保たれる。
-    // 特定の既存名に合わせたい場合のみ functionAppNameSuffix を明示的に上書きする。
+    // 既存リソース名と一致させるため固定。新規環境では未指定にして uniqueString を使うか、
+    // 既存 Function App 名のサフィックス（'func-transcription-{env}-XXXXXX' の XXXXXX 部分）を渡す。
+    // 既存サイト func-transcription-dev-ddh4w2 が asp-transcription-dev に紐付いているため一致させる
+    // （Flex Consumption は 1 プラン 1 サイトのみ）。
+    functionAppNameSuffix: 'ddh4w2'
   }
 }
 
@@ -151,45 +146,54 @@ module eventgrid 'modules/eventgrid.bicep' = {
     projectName: projectName
     environment: environmentName
     dataStorageAccountId: storage.outputs.dataStorageAccountId
-    dataStorageAccountName: storage.outputs.dataStorageAccountName
   }
 }
 
-module containerApps 'modules/container-apps.bicep' = {
-  name: 'containerApps'
-  scope: rg
-  params: {
-    projectName: projectName
-    environment: environmentName
-    location: location
-    tags: tags
-    subnetAcaId: network.outputs.subnetAcaId
-    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
-    logAnalyticsWorkspaceResourceId: monitoring.outputs.logAnalyticsWorkspaceResourceId
-    dataStorageAccountName: storage.outputs.dataStorageAccountName
-    dataStorageAccountId: storage.outputs.dataStorageAccountId
-    acrLoginServer: acr.outputs.acrLoginServer
-    acrId: acr.outputs.acrId
-    allowedIpRanges: allowedIpRanges
-    uiExists: uiExists
-  }
-}
+module containerApps 'modules/container-apps.bicep' = {  
+  name: 'containerApps'  
+  scope: rg  
+  params: {  
+    projectName: projectName  
+    environment: environmentName  
+    location: location  
+    tags: tags  
+    subnetAcaId: network.outputs.subnetAcaId  
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId  
+    logAnalyticsWorkspaceResourceId: monitoring.outputs.logAnalyticsWorkspaceResourceId  
+    dataStorageAccountName: storage.outputs.dataStorageAccountName  
+    dataStorageAccountId: storage.outputs.dataStorageAccountId  
+    acrLoginServer: acr.outputs.acrLoginServer  
+    acrId: acr.outputs.acrId  
+    allowedIpRanges: allowedIpRanges  
+    uiExists: uiExists  
+  
+    azureOpenAIEndpoint: ai.outputs.openAIEndpoint  
+    azureOpenAIId: ai.outputs.openAIId  
+    azureOpenAIChatDeployment: ai.outputs.chatDeployment  
+    azureOpenAIEmbeddingDeployment: ai.outputs.embeddingDeployment  
+    azureOpenAIApiVersion: '2024-10-21'  
+  
+    azureSearchEndpoint: search.outputs.searchEndpoint  
+    azureSearchId: search.outputs.searchId  
+    azureSearchPrincipalId: search.outputs.searchPrincipalId  
+    azureSearchIndexName: search.outputs.indexName  
+    azureSearchSemanticConfig: search.outputs.semanticConfigName  
+    readFields: 'content,source_file,transcript_path,chunk_id,speaker,start_time'  
+  }  
+}  
 
-// ==============================================================================
-// Deployer RBAC — azd 実行者本人にも開発・運用用ロールを付与
-// principalId が空のとき（CI で未注入など）はスキップ
-// ==============================================================================
-module deployerRbac 'modules/deployer-rbac.bicep' = if (!empty(principalId)) {
-  name: 'deployerRbac'
-  scope: rg
-  params: {
-    principalId: principalId
-    principalType: principalType
-    dataStorageAccountName: storage.outputs.dataStorageAccountName
-    acrName: acr.outputs.acrName
-    logAnalyticsWorkspaceName: monitoring.outputs.logAnalyticsWorkspaceName
-  }
-}
+module search 'modules/search.bicep' = {  
+  name: 'search'  
+  scope: rg  
+  params: {  
+    projectName: projectName  
+    environment: environmentName  
+    location: location  
+    tags: tags  
+    subnetPrivateEndpointsId: network.outputs.subnetPrivateEndpointsId  
+    privateDnsZoneSearchId: network.outputs.privateDnsZoneSearchId  
+  }  
+}  
 
 // ==============================================================================
 // azd 用出力
@@ -202,4 +206,7 @@ output SERVICE_UI_RESOURCE_NAME string = containerApps.outputs.containerAppName
 output AZURE_CONTAINER_APP_ENVIRONMENT_NAME string = containerApps.outputs.containerAppEnvironmentName
 output AI_SERVICES_ENDPOINT string = ai.outputs.aiServicesEndpoint
 output CONTAINER_APP_URL string = containerApps.outputs.containerAppUrl
-output AZURE_DATA_STORAGE_ACCOUNT_NAME string = storage.outputs.dataStorageAccountName
+output AZURE_OPENAI_ENDPOINT string = ai.outputs.openAIEndpoint  
+output AZURE_OPENAI_CHAT_DEPLOYMENT string = ai.outputs.chatDeployment  
+output AZURE_SEARCH_ENDPOINT string = search.outputs.searchEndpoint  
+output AZURE_SEARCH_INDEX_NAME string = search.outputs.indexName  

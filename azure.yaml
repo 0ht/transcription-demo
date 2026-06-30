@@ -90,3 +90,28 @@ hooks:
           az storage account update -n $funcSt -g $env:AZURE_RESOURCE_GROUP --public-network-access Disabled --default-action Deny --output none
         }
         Write-Host ">>> Public access disabled."
+
+  # azd down 前に AMPLS(Private Link Scope)を削除してワークスペースのパージブロックを回避
+  predown:
+    posix:
+      shell: sh
+      run: |
+        echo ">>> Deleting Azure Monitor Private Link Scopes before teardown..."
+        AMPLS_IDS=$(az resource list -g "$AZURE_RESOURCE_GROUP" --resource-type "microsoft.insights/privatelinkscopes" --query "[].id" -o tsv 2>/dev/null)
+        for ID in $AMPLS_IDS; do
+          echo ">>> Deleting $ID"
+          az resource delete --ids "$ID" --output none 2>/dev/null || true
+        done
+        echo ">>> AMPLS cleanup complete."
+    windows:
+      shell: pwsh
+      run: |
+        Write-Host ">>> Deleting Azure Monitor Private Link Scopes before teardown..."
+        $amplsIds = az resource list -g $env:AZURE_RESOURCE_GROUP --resource-type "microsoft.insights/privatelinkscopes" --query "[].id" -o tsv 2>$null
+        foreach ($id in $amplsIds) {
+          if ($id) {
+            Write-Host ">>> Deleting $id"
+            az resource delete --ids $id --output none 2>$null
+          }
+        }
+        Write-Host ">>> AMPLS cleanup complete."

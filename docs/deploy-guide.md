@@ -1,7 +1,7 @@
 # Blob 文字起こしシステム — デプロイガイド
 
 本ドキュメントは **環境セットアップ → プロビジョニング → デプロイ → 動作確認** までの全手順をまとめたものです。  
-**すべてのコマンドはプロジェクトルート（`受電業務_Stage1/`）から実行してください。**
+**すべてのコマンドはプロジェクトルート（`transcription-demo/`）から実行してください。**
 
 ---
 
@@ -28,7 +28,7 @@ azd up
 ## ディレクトリ構造
 
 ```
-受電業務_Stage1/          ← プロジェクトルート（ここで全コマンド実行）
+transcription-demo/       ← プロジェクトルート（ここで全コマンド実行）
 ├── azure.yaml            ← azd プロジェクト定義
 ├── docs/
 │   ├── deploy-guide.md   ← 本ドキュメント
@@ -45,15 +45,27 @@ azd up
 │       ├── storage.bicep
 │       ├── acr.bicep
 │       ├── ai.bicep
+│       ├── openai.bicep
+│       ├── search.bicep
 │       ├── monitoring.bicep
 │       ├── functions.bicep
 │       ├── eventgrid.bicep
-│       └── container-apps.bicep
+│       ├── container-apps.bicep
+│       ├── fetch-container-image.bicep  ← exists パターン用（前回イメージ取得）
+│       └── deployer-rbac.bicep          ← azd 実行者への RBAC 自動付与
+├── scripts/              ← 運用補助スクリプト
+│   └── cleanup-orphan-ra.ps1            ← 孤立ロール割当のクリーンアップ
 └── ui/                   ← Streamlit UI
-    ├── app.py
-    ├── blob_service.py
+    ├── app.py            ← エントリポイント（タブ・チャート・ボタン定義）
+    ├── blob_service.py   ← Blob 一覧/取得/削除
+    ├── config.py         ← 環境変数・設定読み込み
+    ├── index_service.py  ← RAG: インデックス作成 + push 登録
+    ├── search_service.py ← RAG: ベクトル/セマンティック検索
+    ├── llm.py            ← RAG: 埋め込み・回答生成（Azure OpenAI）
     ├── Dockerfile
-    └── requirements.txt
+    ├── requirements.txt
+    └── components/
+        └── ffmpeg_extractor/            ← 動画→MP3 ブラウザ内変換コンポーネント
 ```
 
 ## アーキテクチャ概要
@@ -119,6 +131,19 @@ flowchart TB
 >
 > ⚠️ **`publicNetworkAccess: Disabled` にしない**: Speech Batch Transcription は AI Services のパブリックエンドポイントから Source URL を fetch するため、ストレージ側を `Disabled` にすると Trusted Access (`resourceAccessRules`) が機能せず `InvalidData: The recordings URI contains invalid data.` で失敗します。
 
+### RAG（AIに質問）機能のアクセスパス
+
+UI（Streamlit）には、表示中の文字起こしを対象に自然言語で質問できる RAG 機能があります。Azure OpenAI・Azure AI Search ともに **`publicNetworkAccess=Disabled` + Private Endpoint** の閉域構成です。
+
+| アクセス元 | アクセス手段 | 認証 |
+|---|---|---|
+| Container Apps (UI) → Azure AI Search | Private Endpoint（VNet 統合 → Private DNS Zone） | MI + Search Service / Index Data Contributor |
+| Container Apps (UI) → Azure OpenAI（埋め込み・回答生成） | Private Endpoint（`privatelink.openai.azure.com`） | MI + Cognitive Services OpenAI User |
+
+> ⚠️ **統合ベクトル化（VectorizableTextQuery）は使わない**
+> OpenAI が `publicNetworkAccess=Disabled` のため、検索時に Azure AI Search 側が OpenAI を呼ぶ「統合ベクトル化」は 403（Forbidden）になります（Search→OpenAI の shared private link を別途張らない限り不可）。
+> 本システムは **クエリのベクトル化を UI 側（MI）で実施**し（`embed_texts`）、`VectorizedQuery` として検索に渡すことで Search→OpenAI 呼び出しを回避しています。インデックス登録も同様に UI 側で埋め込みを計算する **push 型** です。詳細は [requirement.md](requirement.md) 3.8 を参照。
+
 ## 作成されるリソース
 
 | リソース | 命名規則 | ポイント |
@@ -130,6 +155,8 @@ flowchart TB
 | Azure Functions (Flex Consumption) | `func-transcription-{env}-{hash}` | `publicNetworkAccess=Disabled` / VNet 統合 / MI |
 | AI Services (Foundry 親リソース) | `ais-transcription-{env}` | `kind=AIServices` / `disableLocalAuth=true` / MI |
 | Foundry Project | `proj-transcription-{env}` | Hub 不要スタンドアロン |
+| Azure OpenAI | `oai-transcription-{env}` | RAG 用。`publicNetworkAccess=Disabled` + PE / `disableLocalAuth=true` / `gpt-4.1-mini` + `text-embedding-3-large` をデプロイ / MI |
+| Azure AI Search | `srch-transcription-{env}` | RAG 用。`publicNetworkAccess=disabled` + PE / MI 認証 / `documents` インデックス（UI から push 登録） |
 | Container Registry (Premium) | `acrtranscription{env}` | Premium SKU で PE サポート |
 | Container App (Streamlit UI) | `ca-transcription-ui-{env}` | MI / `allowedIpRanges` で Ingress 制限可（認証は未実装、今後追加予定） |
 | Event Grid System Topic | `evgt-blob-transcription-{env}` | Storage Queue (`blob-events`) に配信 |
@@ -153,6 +180,8 @@ flowchart TB
 | **Azure Functions (Flex Consumption)** | サーバーレス関数実行基盤 | コードだけ書けば自動でスケールする。Flex Consumption は VNet 統合 + 高速スケールに対応した新プラン。 |
 | **Azure AI Services (Speech)** | 音声認識 API | `Speech Batch Transcription v3.2` を使い、長尺音声を非同期に文字起こしする。`kind=AIServices` は Foundry の親リソース。 |
 | **Azure AI Foundry Project** | AI 開発の論理プロジェクト | AI Services にぶら下がるプロジェクト単位。本システムでは Speech 利用時のスコープとして配置。 |
+| **Azure OpenAI** | 生成 AI / 埋め込み API | RAG 機能で利用。`gpt-4.1-mini` で回答生成、`text-embedding-3-large` でチャンク/クエリのベクトル化。 |
+| **Azure AI Search** | 全文 + ベクトル検索エンジン | 文字起こしをチャンク化して索引し、ハイブリッド/セマンティック検索で関連箇所を取得（RAG の検索基盤）。 |
 | **Azure Container Registry (ACR)** | コンテナイメージのレジストリ | UI 用 Docker イメージを格納。Premium SKU は Private Endpoint に対応。 |
 | **Azure Container Apps (ACA)** | フルマネージド コンテナ実行基盤 | Streamlit UI をコンテナとしてホスト。スケール・HTTPS・MI を自動で面倒みてくれる。 |
 | **Azure Virtual Network (VNet) / Subnet** | 仮想ネットワーク | Functions / ACA / Private Endpoint をそれぞれ別サブネットに収容し、閉域通信を構成。 |
@@ -272,7 +301,7 @@ az account show --output table
 
 ## 3. azd 環境の初期化
 
-プロジェクトルート (`受電業務_Stage1/`) で実行してください。環境名は `dev` / `stg` / `prod` 等を指定します。
+プロジェクトルート (`transcription-demo/`) で実行してください。環境名は `dev` / `stg` / `prod` 等を指定します。
 
 ```powershell
 # 現在のディレクトリ確認（プロジェクトルートにいるか）
@@ -288,7 +317,7 @@ azd init -e dev
 <summary>📖 補足: azd 環境とは / カレントディレクトリの扱い</summary>
 
 - **azd 環境**: 1 つの azd プロジェクトに対し、デプロイ先（サブスクリプション・リージョン・パラメータ値）を切り替えるための「プロファイル」。`.azure/<env>/.env` に保存され、`azd env get-value <KEY>` で参照できます。
-- **カレントディレクトリ**: VS Code で「Open Folder」→「受電業務_Stage1」を開いていれば自動設定済み。別の場所から開いている場合は `Set-Location "C:\path\to\受電業務_Stage1"` で移動してください。
+- **カレントディレクトリ**: VS Code で「Open Folder」→「transcription-demo」を開いていれば自動設定済み。別の場所から開いている場合は `Set-Location "C:\path\to\transcription-demo"` で移動してください。
 
 </details>
 
@@ -808,7 +837,7 @@ azd provision
 |----------|----------|
 | **基盤** | Bicep + azd による IaC、`rg-transcription-{env}` 単位の環境分離 |
 | **ネットワーク** | VNet `10.0.0.0/16` + 3 サブネット、Storage / ACR / AI Services / Functions / Monitor の Private Endpoint、Private DNS Zone |
-| **Storage** | `publicNetworkAccess=Disabled` / `allowSharedKeyAccess=false`（データ Storage） / Trusted Services bypass で AI Services から SAS なしアクセス |
+| **Storage** | データ Storage は `publicNetworkAccess=Enabled` + `defaultAction=Deny`（パブリック EP は ACL で全拒否、Trusted Services bypass で AI Services のみ SAS なしアクセス） / `allowSharedKeyAccess=false`。Functions ランタイム用 Storage は `publicNetworkAccess=Disabled` |
 | **コンピュート** | Functions Flex Consumption（VNet 統合）、Container Apps（VNet 統合・外部 Ingress） |
 | **ID / RBAC** | 全コンポーネント Managed Identity、`disableLocalAuth=true`（AI Services）、azd 実行者本人にも開発・運用ロール自動付与 |
 | **音声書き起こし** | Speech Batch Transcription v3.2、Queue Trigger による非同期処理、try/finally でジョブ削除 |

@@ -9,6 +9,7 @@ param subnetPrivateEndpointsId string
 param privateDnsZoneAcrId string
 
 resource acr 'Microsoft.ContainerRegistry/registries@2023-11-01-preview' = {
+  #disable-next-line BCP334
   name: 'acr${replace(projectName, '-', '')}${environment}'
   location: location
   tags: tags

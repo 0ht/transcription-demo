@@ -61,7 +61,8 @@ resource containerOutput 'Microsoft.Storage/storageAccounts/blobServices/contain
 
 // Event Grid 用 Storage Queue（ARM 経由で作成 — 閉域対応）
 resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-05-01' = {
-  name: '${dataStorage.name}/default'
+  parent: dataStorage
+  name: 'default'
 }
 
 resource blobEventsQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {

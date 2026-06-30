@@ -44,10 +44,22 @@ graph TB
         Functions -->|結果保存| BlobOutput
         Functions -->|元ファイル移動| BlobProcessed
         Functions -->|ログ| AppInsights["Application Insights<br/>🔒 Private Link Scope"]
+
+        subgraph Search["Azure AI Search<br/>🔒 Private Endpoint"]
+            SearchIndex["documents インデックス<br/>(ベクトル + セマンティック)"]
+        end
+
+        subgraph OpenAISub["Azure OpenAI<br/>🔒 Private Endpoint"]
+            ChatModel["gpt-4.1-mini (チャット)"]
+            EmbedModel["text-embedding-3-large (埋め込み)"]
+        end
     end
 
     ACA -.->|Private Endpoint 経由| BlobOutput
     ACA -.->|Private Endpoint 経由| BlobProcessed
+    ACA -.->|チャンク登録 / ベクトル検索| SearchIndex
+    ACA -.->|クエリ埋め込み / 回答生成| ChatModel
+    ACA -.-> EmbedModel
 ```
 
 **ネットワーク方針**: ACA（Streamlit UI）の Ingress のみ外部公開。それ以外の全リソースは **Private Endpoint / VNet 統合** によるクローズド構成とする。
@@ -214,6 +226,7 @@ processed/
 | システムログ | Functions ログ表示、Queue 状態確認（Log Analytics 連携） |
 | 検索・フィルタ | 日付範囲、ファイル名、キーワードでの絞り込み |
 | ダウンロード | txt / JSON ファイルのダウンロード |
+| AI質問（RAG） | 表示中の文字起こしを対象に自然言語で質問し、根拠付きで回答（3.8 参照） |
 
 ### 3.7 エラーハンドリング
 
@@ -225,6 +238,50 @@ processed/
 | 空ファイル / 音声なし | スキップ。ログに「音声コンテンツなし」と記録 |
 
 > **エラーマーカー方式の採用理由**: 旧設計では失敗時に例外を再 raise してキューを poison 行きにしていたが、UI 側の poison メッセージ検知は経路が複雑（Queue peek + ログ突合）で表示の安定性に欠けた。output コンテナにマーカーを書く方式は、UI が Blob を 1 回列挙するだけで確実にエラー一覧化でき、削除も `_error.json` + processed 元ファイルの 2 件削除で完結する。
+
+### 3.8 RAG（文字起こし内容への AI 質問）機能
+
+UI 上で、表示中の文字起こしを対象に自然言語で質問し、根拠付きの回答を得られる機能（Retrieval-Augmented Generation）。
+
+| 項目 | 内容 |
+|------|------|
+| AI 基盤 | Azure OpenAI（チャット: `gpt-4.1-mini` / 埋め込み: `text-embedding-3-large` 3,072 次元） |
+| 検索基盤 | Azure AI Search（`documents` インデックス。ベクトル + セマンティック ハイブリッド検索） |
+| 認証 | UI の Managed Identity（キーレス）。OpenAI / Search ともに `disableLocalAuth` |
+| 有効化条件 | `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_CHAT_DEPLOYMENT` / `AZURE_SEARCH_ENDPOINT` が揃うと自動で有効（`RAG_ENABLED`）。未設定時は質問 UI を非表示にし、ダッシュボード本体は動作 |
+
+#### インデックス登録（push 型）
+
+検索インデックスへの登録は **アプリ側で埋め込みを計算して push する方式**（indexer / skillset を使う pull 型ではない）。
+
+1. UI の「📥 このファイルをインデックスに登録」ボタンで起動
+2. `documents` インデックスが無ければ作成（`ensure_index`）
+3. 文字起こし `segments` を約 1,200 文字単位にチャンク化（巨大セグメントは改行・句点優先で内部分割し、埋め込みの 8,192 トークン上限を回避）
+4. Azure OpenAI でチャンクをベクトル化（16 件ずつバッチ）
+5. 同一ファイルの既存ドキュメントを削除してから `upload_documents` で登録（再登録時の重複防止）
+
+> **push 型を採用した理由**: OpenAI / Search ともに閉域（`publicNetworkAccess=Disabled`）のため、Search 側の統合ベクトル化（Search→OpenAI 呼び出し）は shared private link を別途張らない限り 403 になる。アプリ側ベクトル化なら UI の Private Endpoint 経由でそのまま動作し、追加コストも不要。
+
+#### 質問〜回答（検索パイプライン）
+
+1. 質問の意図を要約（`gpt-4.1-mini`）
+2. 意図から検索クエリを生成（AI 最適化は ON/OFF 可能）
+3. **クエリのベクトルを UI 側で計算**し、`VectorizedQuery` で Azure AI Search を検索（hybrid / semantic_hybrid / vector / keyword）
+4. 検索ヒットのみを根拠に回答を生成（出典番号 `[1][2]` 付き）
+
+> ⚠️ **検索時も Search→OpenAI 呼び出しを回避**: クエリのベクトル化を UI 側で行うことで、閉域の OpenAI に対する統合ベクトル化の 403 を防いでいる。
+
+#### インデックス スキーマ（`documents`）
+
+| フィールド | 型 | 役割 |
+|-----------|-----|------|
+| `id` | String (key) | `transcript_path#chunk_id` を base64 化した一意キー |
+| `content` | SearchableString | チャンク本文（全文 + セマンティック対象） |
+| `source_file` | String (filter/facet) | 元音声ファイル名 |
+| `transcript_path` | String (filter) | 文字起こし JSON のパス（フィルタ・削除キー） |
+| `chunk_id` | Int32 (filter/sort) | チャンク連番 |
+| `speaker` / `start_time` | String | 話者・開始時刻メタデータ |
+| `text_vector` | Collection(Single) | 埋め込みベクトル（3,072 次元 / HNSW） |
 
 ## 4. 非機能要件
 
@@ -250,6 +307,8 @@ ACA（Streamlit UI）のフロントエンド Ingress **のみ外部公開**。�
 | Azure Functions | **VNet 統合 + Private Endpoint** | Functions → 外部通信は VNet 経由。受信も Private Endpoint で制限 |
 | Azure AI Foundry Project | **Private Endpoint** | プロジェクト自体に Private Endpoint を設定。配下の AI Services も閉域アクセス |
 | Application Insights | **Azure Monitor Private Link Scope (AMPLS)** | ログ送信・クエリを Private Link 経由に制限 |
+| Azure OpenAI | **Private Endpoint**（`privatelink.openai.azure.com`） | チャット/埋め込みを閉域アクセス。クエリのベクトル化は UI 側で実施し Search→OpenAI 呼び出しを回避（3.8 参照） |
+| Azure AI Search | **Private Endpoint** | 文字起こしチャンクのベクトル/セマンティック検索。UI から MI で push 登録・検索 |
 | Azure Container Apps | **External Ingress（公開）+ VNet 統合（送信）** | UI は外部公開。バックエンドへの通信は VNet 統合経由 |
 | Event Grid | **Storage Queue 配信**（閉域: AzureServices バイパスで配信可能） |
 
@@ -281,7 +340,7 @@ ACA（Streamlit UI）のフロントエンド Ingress **のみ外部公開**。�
 | `networkAcls.resourceAccessRules` | AI Services リソース ID を登録 | Speech Batch Transcription バックエンドが、登録された AI Services 経由で発行されたジョブに対してのみ Storage アクセスを許可。 |
 | `allowSharedKeyAccess` | **`false`** | アカウントキー / SAS 認証を全面禁止し、Entra ID 認証のみに統一。 |
 | `allowBlobPublicAccess` | **`false`** | コンテナ単位の匿名読み取りを禁止。 |
-| Private Endpoint | **Blob / Queue / Table の 3 つを配置** | Functions・Container Apps・デプロイ実行者は VNet 統合 → Private DNS Zone 経由で PE に名前解決してアクセス。 |
+| Private Endpoint | **Blob / Queue の 2 つを配置**（データ Storage） | Functions・Container Apps・デプロイ実行者は VNet 統合 → Private DNS Zone 経由で PE に名前解決してアクセス。Functions ランタイム用ストレージには別途 Blob / Table の PE を配置（Flex Consumption 要件）。 |
 | CLI からの手動アップロード | 自分の IP を `network-rule add` で一時許可 | デプロイ運用者やテスト時に必要。`publicNetworkAccess` の切替は不要。テスト完了後は IP ルールのみ削除。詳細は [deploy-guide.md](./deploy-guide.md) セクション 9・11 を参照。 |
 
 > **Functions ランタイム用ストレージ** (`sttranscriptionfunc{env}`) は AI Services Trusted Access が不要のため `publicNetworkAccess: Disabled` で完全閉域化する。azd デプロイ時のみ hooks (`predeploy` / `postdeploy`) で一時開放・再閉域化を自動実行する。
@@ -304,6 +363,8 @@ ACA（Streamlit UI）のフロントエンド Ingress **のみ外部公開**。�
 | Azure Functions (Python, Flex Consumption) | Queue Trigger → 文字起こし処理 | VNet 統合 + Private Endpoint |
 | Azure AI Services (kind=AIServices) | 音声→テキスト変換（Batch Transcription API） | Private Endpoint |
 | Microsoft Foundry Project | AI サービスのプロジェクト管理（accounts/projects 子リソース） | 親リソースの PE 経由 |
+| Azure OpenAI | RAG のチャット(回答生成)・埋め込み(ベクトル化) | Private Endpoint |
+| Azure AI Search | 文字起こしチャンクのベクトル/セマンティック検索（`documents` インデックス） | Private Endpoint |
 | Azure Container Registry (Premium) | Streamlit UI Docker イメージ管理 | Private Endpoint |
 | Azure Container Apps | Streamlit UI ホスティング | External Ingress + VNet 統合 |
 | Application Insights | ログ・監視 | Azure Monitor Private Link Scope |
@@ -333,7 +394,8 @@ ACA（Streamlit UI）のフロントエンド Ingress **のみ外部公開**。�
 ## 7. 今後の拡張検討事項
 
 - [ ] 大容量動画対応（ブラウザ抽出の限界を超える場合の Azure Video Indexer 連携）
-- [ ] 要約機能（Foundry Project に Azure OpenAI を追加し、文字起こし結果の自動要約）
+- [x] 文字起こし内容への AI 質問（RAG）機能 — 実装済み（3.8 参照）
+- [ ] 要約機能（文字起こし結果の自動要約。RAG 基盤の Azure OpenAI を流用予定）
 - [ ] 感情分析（Foundry Project の AI サービスで通話内容のセンチメント分析）
 - [ ] 多言語対応（英語等の自動言語検出）
 - [ ] Entra ID 認証の追加（外部アクセス対応時）
