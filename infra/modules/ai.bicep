@@ -1,13 +1,17 @@
 // ==============================================================================
 // AI Services (Foundry リソース) + Foundry Project
 // ==============================================================================
-param projectName string
-param environment string
+@description('リソースのデプロイ先リージョン。')
 param location string
+@description('リソースに付与する共通タグ。')
 param tags object
+@description('Private Endpoint を配置するサブネットのリソース ID。')
 param subnetPrivateEndpointsId string
+@description('Cognitive Services 用 Private DNS ゾーンのリソース ID。')
 param privateDnsZoneCognitiveId string
+@description('Azure OpenAI 用 Private DNS ゾーンのリソース ID。')
 param privateDnsZoneOpenAIId string
+@description('データ用 Storage アカウントのリソース ID。')
 param dataStorageAccountId string
 
 @description('Chat model deployment name')
@@ -25,8 +29,17 @@ param embeddingDeploymentName string = 'text-embedding-3-large'
 @description('Embedding model name')
 param embeddingModelName string = 'text-embedding-3-large'
 
+@description('AI Services アカウント名（トークン付与済み最終名）')
+param aiServicesName string
+
+@description('Foundry Project 名')
+param foundryProjectName string
+
+@description('AI Services の Private Endpoint 名')
+param peAiServicesName string
+
 resource aiServices 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = {
-  name: 'ais-${projectName}-${environment}'
+  name: aiServicesName
   location: location
   tags: tags
   kind: 'AIServices'
@@ -34,7 +47,7 @@ resource aiServices 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = 
   identity: { type: 'SystemAssigned' }
   properties: {
     allowProjectManagement: true
-    customSubDomainName: 'ais-${projectName}-${environment}'
+    customSubDomainName: aiServicesName
     publicNetworkAccess: 'Disabled'
     disableLocalAuth: true
     networkAcls: {
@@ -46,7 +59,7 @@ resource aiServices 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = 
 // Foundry Project (Hub 不要のスタンドアロン構成)
 resource foundryProject 'Microsoft.CognitiveServices/accounts/projects@2025-04-01-preview' = {
   parent: aiServices
-  name: 'proj-${projectName}-${environment}'
+  name: foundryProjectName
   location: location
   tags: tags
   identity: { type: 'SystemAssigned' }
@@ -96,7 +109,7 @@ resource embeddingDeployment 'Microsoft.CognitiveServices/accounts/deployments@2
 // 非同期で一時的に "Accepted" 状態になり、その最中に PE がアカウントを参照すると
 // AccountProvisioningStateInvalid で失敗するため、明示的に dependsOn で直列化する。
 resource peAiServices 'Microsoft.Network/privateEndpoints@2024-01-01' = {
-  name: 'pe-ais-${environment}'
+  name: peAiServicesName
   location: location
   tags: tags
   properties: {

@@ -10,6 +10,12 @@ param environmentName string
 @description('Azure リージョン')
 param location string
 
+@description('プロジェクト名。リソース名のプレフィックスに使用。')
+param projectName string = 'transcription'
+
+@description('リソースに付与する project タグの値。')
+param projectTag string = 'blob-transcription'
+
 @description('Speech to Text の言語設定')
 param speechLanguage string = 'ja-JP'
 
@@ -23,16 +29,59 @@ param principalId string = ''
 @description('UI Container App が既存リソースとして存在するか。azd が SERVICE_UI_RESOURCE_EXISTS から自動セット。初回 false→公開イメージで作成、2回目以降 true→既存 ACR イメージを引き継ぐ。')
 param uiExists bool = false
 
-var projectName = 'transcription'
 var tags = {
   'azd-env-name': environmentName
-  project: 'blob-transcription'
+  project: projectTag
   managed_by: 'bicep'
 }
-var resourceGroupName = 'rg-${projectName}-${environmentName}'
+
+// ------------------------------------------------------------------------------
+// リソース名の一意性トークン
+// グローバル一意性が必要なリソース（Storage / ACR / AI Services / Search / Function App）
+// の名前末尾に常に付与し、サブスクリプション・環境・リージョンをまたいだ名前衝突を防ぐ。
+// 全環境（dev を含む）・全リソースにトークンを付与する。
+// ------------------------------------------------------------------------------
+var resourceToken = substring(uniqueString(subscription().subscriptionId, environmentName, location), 0, 6)
+
+// ------------------------------------------------------------------------------
+// リソース名の集中管理: projectName / environmentName / トークンから標準命名規則で導出する（変数）。
+// グローバル一意リソース（Storage x2 / ACR / AI Services / Search / Function App）のみ末尾にトークンを付与。
+// ------------------------------------------------------------------------------
+var projClean = replace(projectName, '-', '')
+var envClean = toLower(replace(environmentName, '-', ''))
+
+var rgName = 'rg-${projectName}-${environmentName}'
+var vnetName = 'vnet-${projectName}-${environmentName}'
+var subnetFunctionsName = 'snet-functions'
+var subnetAcaName = 'snet-aca'
+var subnetPrivateEndpointsName = 'snet-privateendpoints'
+var logAnalyticsName = 'log-${projectName}-${environmentName}'
+var appInsightsName = 'appi-${projectName}-${environmentName}'
+var amplsName = 'ampls-${projectName}-${environmentName}'
+var peMonitorName = 'pe-monitor-${environmentName}'
+var eventGridTopicName = 'evgt-blob-${projectName}-${environmentName}'
+var eventGridSubscriptionName = 'evgs-blob-created'
+var containerAppEnvName = 'cae-${projectName}-${environmentName}'
+var containerAppName = 'ca-${projectName}-ui-${environmentName}'
+var appServicePlanName = 'asp-${projectName}-${environmentName}'
+var functionAppName = 'func-${projectName}-${environmentName}-${resourceToken}'
+var peFunctionsName = 'pe-func-${environmentName}'
+var dataStorageName = 'st${take(projClean, 5)}${take(envClean, 6)}d${resourceToken}'
+var functionsStorageName = 'st${take(projClean, 5)}${take(envClean, 6)}f${resourceToken}'
+var peDataBlobName = 'pe-st-data-${environmentName}'
+var peDataQueueName = 'pe-st-data-queue-${environmentName}'
+var peFuncStorageName = 'pe-st-func-${environmentName}'
+var peFuncStorageTableName = 'pe-st-func-table-${environmentName}'
+var acrName = 'acr${projClean}${envClean}${resourceToken}'
+var peAcrName = 'pe-acr-${environmentName}'
+var aiServicesName = 'ais-${projectName}-${environmentName}-${resourceToken}'
+var foundryProjectName = 'proj-${projectName}-${environmentName}'
+var peAiServicesName = 'pe-ais-${environmentName}'
+var searchName = 'srch-${projectName}-${environmentName}-${resourceToken}'
+var peSearchName = 'pe-srch-${environmentName}'
 
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
-  name: resourceGroupName
+  name: rgName
   location: location
   tags: tags
 }
@@ -41,23 +90,23 @@ module network 'modules/network.bicep' = {
   name: 'network'
   scope: rg
   params: {
-    projectName: projectName
-    environment: environmentName
     location: location
     tags: tags
+    vnetName: vnetName
+    subnetFunctionsName: subnetFunctionsName
+    subnetAcaName: subnetAcaName
+    subnetPrivateEndpointsName: subnetPrivateEndpointsName
   }
 }
 
 // AI Services のリソース ID を予測（Trusted Service として Storage の networkAcls.resourceAccessRules に登録するため）
-var aiServicesName = 'ais-${projectName}-${environmentName}'
+// ai.bicep 側の命名と一致させる必要があるため、同じ最終名を使う。
 var aiServicesResourceId = resourceId(subscription().subscriptionId, rg.name, 'Microsoft.CognitiveServices/accounts', aiServicesName)
 
 module storage 'modules/storage.bicep' = {
   name: 'storage'
   scope: rg
   params: {
-    projectName: projectName
-    environment: environmentName
     location: location
     tags: tags
     subnetPrivateEndpointsId: network.outputs.subnetPrivateEndpointsId
@@ -65,6 +114,12 @@ module storage 'modules/storage.bicep' = {
     privateDnsZoneQueueId: network.outputs.privateDnsZoneQueueId
     privateDnsZoneTableId: network.outputs.privateDnsZoneTableId
     aiServicesResourceId: aiServicesResourceId
+    dataStorageName: dataStorageName
+    functionsStorageName: functionsStorageName
+    peDataBlobName: peDataBlobName
+    peDataQueueName: peDataQueueName
+    peFuncStorageName: peFuncStorageName
+    peFuncStorageTableName: peFuncStorageTableName
   }
 }
 
@@ -72,12 +127,12 @@ module acr 'modules/acr.bicep' = {
   name: 'acr'
   scope: rg
   params: {
-    projectName: projectName
-    environment: environmentName
     location: location
     tags: tags
     subnetPrivateEndpointsId: network.outputs.subnetPrivateEndpointsId
     privateDnsZoneAcrId: network.outputs.privateDnsZoneAcrId
+    acrName: acrName
+    peAcrName: peAcrName
   }
 }
 
@@ -85,14 +140,15 @@ module ai 'modules/ai.bicep' = {
   name: 'ai'
   scope: rg
   params: {
-    projectName: projectName
-    environment: environmentName
     location: location
     tags: tags
     subnetPrivateEndpointsId: network.outputs.subnetPrivateEndpointsId
     privateDnsZoneCognitiveId: network.outputs.privateDnsZoneCognitiveId
     privateDnsZoneOpenAIId: network.outputs.privateDnsZoneOpenAIId
     dataStorageAccountId: storage.outputs.dataStorageAccountId
+    aiServicesName: aiServicesName
+    foundryProjectName: foundryProjectName
+    peAiServicesName: peAiServicesName
   }
 }
 
@@ -100,8 +156,6 @@ module monitoring 'modules/monitoring.bicep' = {
   name: 'monitoring'
   scope: rg
   params: {
-    projectName: projectName
-    environment: environmentName
     location: location
     tags: tags
     subnetPrivateEndpointsId: network.outputs.subnetPrivateEndpointsId
@@ -110,6 +164,10 @@ module monitoring 'modules/monitoring.bicep' = {
     privateDnsZoneOdsId: network.outputs.privateDnsZoneOdsId
     privateDnsZoneAgentsvcId: network.outputs.privateDnsZoneAgentsvcId
     privateDnsZoneBlobId: network.outputs.privateDnsZoneBlobId
+    logAnalyticsName: logAnalyticsName
+    appInsightsName: appInsightsName
+    amplsName: amplsName
+    peMonitorName: peMonitorName
   }
 }
 
@@ -117,8 +175,6 @@ module functions 'modules/functions.bicep' = {
   name: 'functions'
   scope: rg
   params: {
-    projectName: projectName
-    environment: environmentName
     location: location
     tags: tags
     subnetFunctionsId: network.outputs.subnetFunctionsId
@@ -131,11 +187,9 @@ module functions 'modules/functions.bicep' = {
     aiServicesId: ai.outputs.aiServicesId
     applicationInsightsConnectionString: monitoring.outputs.applicationInsightsConnectionString
     speechLanguage: speechLanguage
-    // 既存リソース名と一致させるため固定。新規環境では未指定にして uniqueString を使うか、
-    // 既存 Function App 名のサフィックス（'func-transcription-{env}-XXXXXX' の XXXXXX 部分）を渡す。
-    // 既存サイト func-transcription-dev-ddh4w2 が asp-transcription-dev に紐付いているため一致させる
-    // （Flex Consumption は 1 プラン 1 サイトのみ）。
-    functionAppNameSuffix: 'ddh4w2'
+    functionAppName: functionAppName
+    appServicePlanName: appServicePlanName
+    peFunctionsName: peFunctionsName
   }
 }
 
@@ -143,9 +197,9 @@ module eventgrid 'modules/eventgrid.bicep' = {
   name: 'eventgrid'
   scope: rg
   params: {
-    projectName: projectName
-    environment: environmentName
     dataStorageAccountId: storage.outputs.dataStorageAccountId
+    eventGridTopicName: eventGridTopicName
+    eventGridSubscriptionName: eventGridSubscriptionName
   }
 }
 
@@ -153,7 +207,6 @@ module containerApps 'modules/container-apps.bicep' = {
   name: 'containerApps'  
   scope: rg  
   params: {  
-    projectName: projectName  
     environment: environmentName  
     location: location  
     tags: tags  
@@ -166,6 +219,8 @@ module containerApps 'modules/container-apps.bicep' = {
     acrId: acr.outputs.acrId  
     allowedIpRanges: allowedIpRanges  
     uiExists: uiExists  
+    containerAppEnvName: containerAppEnvName  
+    containerAppName: containerAppName  
   
     azureOpenAIEndpoint: ai.outputs.openAIEndpoint  
     azureOpenAIId: ai.outputs.openAIId  
@@ -186,12 +241,12 @@ module search 'modules/search.bicep' = {
   name: 'search'  
   scope: rg  
   params: {  
-    projectName: projectName  
-    environment: environmentName  
     location: location  
     tags: tags  
     subnetPrivateEndpointsId: network.outputs.subnetPrivateEndpointsId  
     privateDnsZoneSearchId: network.outputs.privateDnsZoneSearchId  
+    searchName: searchName  
+    peSearchName: peSearchName  
   }  
 }  
 

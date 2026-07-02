@@ -1,12 +1,17 @@
 // ==============================================================================
 // Event Grid (Blob → Storage Queue)
 // ==============================================================================
-param projectName string
-param environment string
+@description('イベントソースとなるデータ用 Storage アカウントのリソース ID。')
 param dataStorageAccountId string
 
+@description('Event Grid System Topic 名')
+param eventGridTopicName string
+
+@description('Event Grid Event Subscription 名')
+param eventGridSubscriptionName string
+
 resource systemTopic 'Microsoft.EventGrid/systemTopics@2024-06-01-preview' = {
-  name: 'evgt-blob-${projectName}-${environment}'
+  name: eventGridTopicName
   location: resourceGroup().location
   properties: {
     source: dataStorageAccountId
@@ -16,7 +21,7 @@ resource systemTopic 'Microsoft.EventGrid/systemTopics@2024-06-01-preview' = {
 
 resource eventSubscription 'Microsoft.EventGrid/systemTopics/eventSubscriptions@2024-06-01-preview' = {
   parent: systemTopic
-  name: 'evgs-blob-created'
+  name: eventGridSubscriptionName
   properties: {
     eventDeliverySchema: 'EventGridSchema'
     filter: {

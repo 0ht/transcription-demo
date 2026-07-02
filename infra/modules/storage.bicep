@@ -1,20 +1,42 @@
 // ==============================================================================
 // Storage Accounts (データ用 + Functions ランタイム用)
 // ==============================================================================
-param projectName string
-param environment string
+@description('リソースのデプロイ先リージョン。')
 param location string
+@description('リソースに付与する共通タグ。')
 param tags object
+@description('Private Endpoint を配置するサブネットのリソース ID。')
 param subnetPrivateEndpointsId string
+@description('Blob 用 Private DNS ゾーンのリソース ID。')
 param privateDnsZoneBlobId string
+@description('Queue 用 Private DNS ゾーンのリソース ID。')
 param privateDnsZoneQueueId string
+@description('Table 用 Private DNS ゾーンのリソース ID。')
 param privateDnsZoneTableId string
 @description('AI Services リソース ID。Trusted Service として Storage の resourceAccessRules に登録。空文字なら登録しない。')
 param aiServicesResourceId string = ''
 
+@description('データ用 Storage アカウント名（トークン付与済み最終名）')
+param dataStorageName string
+
+@description('Functions ランタイム用 Storage アカウント名（トークン付与済み最終名）')
+param functionsStorageName string
+
+@description('データ Storage の Blob Private Endpoint 名')
+param peDataBlobName string
+
+@description('データ Storage の Queue Private Endpoint 名')
+param peDataQueueName string
+
+@description('Functions Storage の Blob Private Endpoint 名')
+param peFuncStorageName string
+
+@description('Functions Storage の Table Private Endpoint 名')
+param peFuncStorageTableName string
+
 // データ用 Storage Account
 resource dataStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
-  name: 'st${replace(projectName, '-', '')}data${environment}'
+  name: dataStorageName
   location: location
   tags: tags
   kind: 'StorageV2'
@@ -72,7 +94,7 @@ resource blobEventsQueue 'Microsoft.Storage/storageAccounts/queueServices/queues
 
 // データ Storage の Private Endpoint (Blob)
 resource peDataBlob 'Microsoft.Network/privateEndpoints@2024-01-01' = {
-  name: 'pe-st-data-${environment}'
+  name: peDataBlobName
   location: location
   tags: tags
   properties: {
@@ -101,7 +123,7 @@ resource peDataBlobDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@
 
 // データ Storage の Private Endpoint (Queue)
 resource peDataQueue 'Microsoft.Network/privateEndpoints@2024-01-01' = {
-  name: 'pe-st-data-queue-${environment}'
+  name: peDataQueueName
   location: location
   tags: tags
   properties: {
@@ -130,7 +152,7 @@ resource peDataQueueDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups
 
 // Functions ランタイム用 Storage Account
 resource functionsStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
-  name: 'st${replace(projectName, '-', '')}func${environment}'
+  name: functionsStorageName
   location: location
   tags: tags
   kind: 'StorageV2'
@@ -155,7 +177,7 @@ resource deploymentPackageContainer 'Microsoft.Storage/storageAccounts/blobServi
 }
 
 resource peFuncStorage 'Microsoft.Network/privateEndpoints@2024-01-01' = {
-  name: 'pe-st-func-${environment}'
+  name: peFuncStorageName
   location: location
   tags: tags
   properties: {
@@ -184,7 +206,7 @@ resource peFuncStorageDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGrou
 
 // Functions Storage の Private Endpoint (Table) — Flex Consumption ランタイムに必須
 resource peFuncStorageTable 'Microsoft.Network/privateEndpoints@2024-01-01' = {
-  name: 'pe-st-func-table-${environment}'
+  name: peFuncStorageTableName
   location: location
   tags: tags
   properties: {

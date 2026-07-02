@@ -11,11 +11,20 @@
     "principalId": {
       "value": "${AZURE_PRINCIPAL_ID}"
     },
-    "principalType": {
-      "value": "${AZURE_PRINCIPAL_TYPE=User}"
-    },
     "uiExists": {
       "value": "${SERVICE_UI_RESOURCE_EXISTS=false}"
+    },
+    "projectName": {
+      "value": "transcription"
+    },
+    "projectTag": {
+      "value": "blob-transcription"
+    },
+    "speechLanguage": {
+      "value": "ja-JP"
+    },
+    "allowedIpRanges": {
+      "value": []
     }
   }
 }

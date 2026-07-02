@@ -1,19 +1,37 @@
 // ==============================================================================
 // Monitoring: Log Analytics + App Insights + AMPLS + Private Endpoint
 // ==============================================================================
-param projectName string
-param environment string
+@description('リソースのデプロイ先リージョン。')
 param location string
+@description('リソースに付与する共通タグ。')
 param tags object
+@description('Private Endpoint を配置するサブネットのリソース ID。')
 param subnetPrivateEndpointsId string
+@description('Monitor 用 Private DNS ゾーンのリソース ID。')
 param privateDnsZoneMonitorId string
+@description('OMS 用 Private DNS ゾーンのリソース ID。')
 param privateDnsZoneOmsId string
+@description('ODS 用 Private DNS ゾーンのリソース ID。')
 param privateDnsZoneOdsId string
+@description('Agentsvc 用 Private DNS ゾーンのリソース ID。')
 param privateDnsZoneAgentsvcId string
+@description('Blob 用 Private DNS ゾーンのリソース ID。')
 param privateDnsZoneBlobId string
 
+@description('Log Analytics ワークスペース名')
+param logAnalyticsName string
+
+@description('Application Insights 名')
+param appInsightsName string
+
+@description('Azure Monitor Private Link Scope 名')
+param amplsName string
+
+@description('Monitor の Private Endpoint 名')
+param peMonitorName string
+
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
-  name: 'log-${projectName}-${environment}'
+  name: logAnalyticsName
   location: location
   tags: tags
   properties: {
@@ -23,7 +41,7 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
 }
 
 resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
-  name: 'appi-${projectName}-${environment}'
+  name: appInsightsName
   location: location
   tags: tags
   kind: 'other'
@@ -34,7 +52,7 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
 }
 
 resource ampls 'Microsoft.Insights/privateLinkScopes@2021-07-01-preview' = {
-  name: 'ampls-${projectName}-${environment}'
+  name: amplsName
   location: 'global'
   tags: tags
   properties: {
@@ -70,7 +88,7 @@ resource amplsAppInsights 'Microsoft.Insights/privateLinkScopes/scopedResources@
 }
 
 resource peMonitor 'Microsoft.Network/privateEndpoints@2024-01-01' = {
-  name: 'pe-monitor-${environment}'
+  name: peMonitorName
   location: location
   tags: tags
   properties: {

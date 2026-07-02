@@ -1,25 +1,39 @@
 // ==============================================================================
 // Azure Functions (Flex Consumption / Python)
 // ==============================================================================
-param projectName string
-param environment string
+@description('リソースのデプロイ先リージョン。')
 param location string
+@description('リソースに付与する共通タグ。')
 param tags object
+@description('Functions を統合するサブネットのリソース ID。')
 param subnetFunctionsId string
+@description('Private Endpoint を配置するサブネットのリソース ID。')
 param subnetPrivateEndpointsId string
+@description('Functions 用 Private DNS ゾーンのリソース ID。')
 param privateDnsZoneFunctionsId string
+@description('Functions ランタイム用 Storage アカウント名。')
 param functionsStorageAccountName string
+@description('データ用 Storage アカウントの名前。')
 param dataStorageAccountName string
+@description('データ用 Storage アカウントのリソース ID。')
 param dataStorageAccountId string
+@description('AI Services のエンドポイント。')
 param aiServicesEndpoint string
+@description('AI Services のリソース ID。')
 param aiServicesId string
+@description('Application Insights の接続文字列。')
 param applicationInsightsConnectionString string
+@description('Speech to Text の言語設定。')
 param speechLanguage string
 
-@description('Function App 名サフィックス（既存リソース名と一致させる必要あり）')
-param functionAppNameSuffix string = substring(uniqueString(resourceGroup().id), 0, 6)
+@description('Function App 名（トークン付与済み最終名）')
+param functionAppName string
 
-var functionAppName = 'func-${projectName}-${environment}-${functionAppNameSuffix}'
+@description('App Service Plan 名')
+param appServicePlanName string
+
+@description('Functions の Private Endpoint 名')
+param peFunctionsName string
 
 resource funcStorageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: functionsStorageAccountName
@@ -31,7 +45,7 @@ resource dataStorageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' exist
 
 // App Service Plan (Flex Consumption)
 resource appServicePlan 'Microsoft.Web/serverfarms@2024-04-01' = {
-  name: 'asp-${projectName}-${environment}'
+  name: appServicePlanName
   location: location
   tags: tags
   sku: {
@@ -98,7 +112,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
 
 // Private Endpoint
 resource peFunctions 'Microsoft.Network/privateEndpoints@2024-01-01' = {
-  name: 'pe-func-${environment}'
+  name: peFunctionsName
   location: location
   tags: tags
   properties: {

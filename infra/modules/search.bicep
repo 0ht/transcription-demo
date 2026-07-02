@@ -1,8 +1,10 @@
-param projectName string  
-param environment string  
+@description('リソースのデプロイ先リージョン。')  
 param location string  
+@description('リソースに付与する共通タグ。')  
 param tags object  
+@description('Private Endpoint を配置するサブネットのリソース ID。')  
 param subnetPrivateEndpointsId string  
+@description('Search 用 Private DNS ゾーンのリソース ID。')  
 param privateDnsZoneSearchId string  
   
 @description('Search service sku')  
@@ -14,8 +16,14 @@ param indexName string = 'documents'
 @description('Semantic configuration name')  
 param semanticConfigName string = 'default-semantic'  
   
+@description('Search サービス名（トークン付与済み最終名）')  
+param searchName string  
+  
+@description('Search の Private Endpoint 名')  
+param peSearchName string  
+  
 resource search 'Microsoft.Search/searchServices@2023-11-01' = {  
-  name: 'srch-${projectName}-${environment}'  
+  name: searchName  
   location: location  
   tags: tags  
   sku: {  
@@ -34,7 +42,7 @@ resource search 'Microsoft.Search/searchServices@2023-11-01' = {
 }  
   
 resource peSearch 'Microsoft.Network/privateEndpoints@2024-01-01' = {  
-  name: 'pe-srch-${environment}'  
+  name: peSearchName  
   location: location  
   tags: tags  
   properties: {  

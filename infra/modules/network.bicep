@@ -1,12 +1,22 @@
 // ==============================================================================
 // VNet + Subnets + Private DNS Zones
 // ==============================================================================
-param projectName string
-param environment string
+@description('リソースのデプロイ先リージョン。')
 param location string
+@description('リソースに付与する共通タグ。')
 param tags object
 
-var vnetName = 'vnet-${projectName}-${environment}'
+@description('VNet 名')
+param vnetName string
+
+@description('Functions サブネット名')
+param subnetFunctionsName string
+
+@description('ACA サブネット名')
+param subnetAcaName string
+
+@description('Private Endpoint サブネット名')
+param subnetPrivateEndpointsName string
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   name: vnetName
@@ -18,7 +28,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
     }
     subnets: [
       {
-        name: 'snet-functions'
+        name: subnetFunctionsName
         properties: {
           addressPrefix: '10.0.1.0/24'
           defaultOutboundAccess: false
@@ -33,7 +43,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
         }
       }
       {
-        name: 'snet-aca'
+        name: subnetAcaName
         properties: {
           addressPrefix: '10.0.2.0/23'
           // Container Apps が初回起動の placeholder image (mcr.microsoft.com) や
@@ -51,7 +61,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
         }
       }
       {
-        name: 'snet-privateendpoints'
+        name: subnetPrivateEndpointsName
         properties: {
           addressPrefix: '10.0.4.0/24'
           defaultOutboundAccess: false
