@@ -30,6 +30,8 @@ azd up
 ```
 transcription-demo/       ← プロジェクトルート（ここで全コマンド実行）
 ├── azure.yaml            ← azd プロジェクト定義
+├── pytest.ini            ← pytest 設定（testpaths・マーカー）
+├── requirements-test.txt ← テスト用依存（本番イメージには含めない）
 ├── docs/
 │   ├── deploy-guide.md   ← 本ドキュメント
 │   └── requirement.md    ← 要件定義書
@@ -55,6 +57,10 @@ transcription-demo/       ← プロジェクトルート（ここで全コマ�
 │       └── deployer-rbac.bicep          ← azd 実行者への RBAC 自動付与
 ├── scripts/              ← 運用補助スクリプト
 │   └── cleanup-orphan-ra.ps1            ← 孤立ロール割当のクリーンアップ
+├── tests/                ← 単体テスト（pytest, Azure 接続不要）
+│   ├── conftest.py       ← import 前セットアップ・共通フィクスチャ
+│   ├── test_functions.py ← Functions の純粋ロジック
+│   └── test_ui.py        ← UI の純粋ロジック
 └── ui/                   ← Streamlit UI
     ├── app.py            ← エントリポイント（タブ・チャート・ボタン定義）
     ├── blob_service.py   ← Blob 一覧/取得/削除
@@ -539,6 +545,27 @@ az storage account show -n $stName --query "networkRuleSet.defaultAction" -o tsv
 - [Azure Private Endpoint の概要](https://learn.microsoft.com/azure/private-link/private-endpoint-overview)
 - [Private DNS Zone と統合](https://learn.microsoft.com/azure/private-link/private-endpoint-dns)
 - [Storage アカウントのネットワークセキュリティ](https://learn.microsoft.com/azure/storage/common/storage-network-security)
+
+---
+
+## 単体テスト（pytest）
+
+Azure に接続せず、ローカルで完結する**純粋ロジックの単体テスト**を `tests/` に用意しています。
+
+**何をテストしているか**
+- Functions: 出力パス生成（`YYYY/MM/DD/...`）、Blob URL 組み立て、テキスト/JSON 抽出（Blob はモック）
+- UI: 検索フィルタの生成とクォートのエスケープ、ドキュメント ID 生成、文字起こしのチャンク分割ロジック、話者色・ログからのファイル名抽出
+
+**実行方法**（プロジェクトルートで）
+```powershell
+# テスト用依存の導入（初回のみ。実行対象コードの依存も必要）
+pip install -r requirements-test.txt -r ui/requirements.txt
+
+# 実行
+pytest
+```
+
+Azure リソースへの接続は不要で、外部依存（Blob/OpenAI/Search）はモック化されています。実リソースを使う一気通貫の確認は次のセクション 9（E2E）を参照してください。
 
 ---
 
