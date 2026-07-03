@@ -10,15 +10,17 @@ from datetime import datetime
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
 
+from config import (
+    STORAGE_ACCOUNT,
+    CONTAINER_INPUT,
+    CONTAINER_OUTPUT,
+    CONTAINER_PROCESSED,
+    ACCOUNT_URL,
+)
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-STORAGE_ACCOUNT = os.environ.get("DATA_STORAGE_ACCOUNT_NAME", "")
-CONTAINER_INPUT = os.environ.get("CONTAINER_INPUT", "input")
-CONTAINER_OUTPUT = os.environ.get("CONTAINER_OUTPUT", "output")
-CONTAINER_PROCESSED = os.environ.get("CONTAINER_PROCESSED", "processed")
-ACCOUNT_URL = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net"
-
 AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".wma"}
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".webm", ".mkv"}
 

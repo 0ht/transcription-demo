@@ -6,7 +6,6 @@ from azure.identity import DefaultAzureCredential
   
 from config import (  
     AZURE_OPENAI_ENDPOINT,  
-    AZURE_OPENAI_KEY,  
     AZURE_OPENAI_CHAT_DEPLOYMENT,  
     AZURE_OPENAI_API_VERSION,  
     AZURE_OPENAI_EMBEDDING_DEPLOYMENT,  
@@ -19,25 +18,18 @@ def get_aoai_client() -> AzureOpenAI:
     global _aoai_client_instance  
   
     if _aoai_client_instance is None:  
-        if AZURE_OPENAI_KEY:  
-            _aoai_client_instance = AzureOpenAI(  
-                azure_endpoint=AZURE_OPENAI_ENDPOINT,  
-                api_key=AZURE_OPENAI_KEY,  
-                api_version=AZURE_OPENAI_API_VERSION,  
-            )  
-        else:  
-            credential = DefaultAzureCredential()  
+        credential = DefaultAzureCredential()  
   
-            def token_provider():  
-                return credential.get_token(  
-                    "https://cognitiveservices.azure.com/.default"  
-                ).token  
+        def token_provider():  
+            return credential.get_token(  
+                "https://cognitiveservices.azure.com/.default"  
+            ).token  
   
-            _aoai_client_instance = AzureOpenAI(  
-                azure_endpoint=AZURE_OPENAI_ENDPOINT,  
-                api_version=AZURE_OPENAI_API_VERSION,  
-                azure_ad_token_provider=token_provider,  
-            )  
+        _aoai_client_instance = AzureOpenAI(  
+            azure_endpoint=AZURE_OPENAI_ENDPOINT,  
+            api_version=AZURE_OPENAI_API_VERSION,  
+            azure_ad_token_provider=token_provider,  
+        )  
   
     return _aoai_client_instance  
   

@@ -34,6 +34,22 @@ class _FakeBlobService:
         return _FakeBlobClient(self._data)
 
 
+class _ExistsBlobClient:
+    def __init__(self, exists: bool):
+        self._exists = exists
+
+    def exists(self) -> bool:
+        return self._exists
+
+
+class _ExistsBlobService:
+    def __init__(self, exists: bool):
+        self._exists = exists
+
+    def get_blob_client(self, container, name):
+        return _ExistsBlobClient(self._exists)
+
+
 @pytest.mark.unit
 class TestOutputPrefix:
     def test_prefix_uses_utc_date_and_stem(self, monkeypatch):
@@ -118,3 +134,15 @@ class TestExtractText:
 
         result = function_app.extract_text("broken.json", ".json")
         assert result["segments"][0]["text"] == "{not valid json"
+
+
+@pytest.mark.unit
+class TestInputExists:
+    def test_true_when_blob_present(self, monkeypatch):
+        monkeypatch.setattr(function_app, "_blob_svc", lambda: _ExistsBlobService(True))
+        assert function_app._input_exists("a.wav") is True
+
+    def test_false_when_blob_absent(self, monkeypatch):
+        # 処理済みで input から消えている状態（Queue 再配信の冪等スキップ対象）
+        monkeypatch.setattr(function_app, "_blob_svc", lambda: _ExistsBlobService(False))
+        assert function_app._input_exists("a.wav") is False

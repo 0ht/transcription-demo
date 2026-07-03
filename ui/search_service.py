@@ -2,11 +2,10 @@
 import os  
 from typing import Optional  
   
-from azure.core.credentials import AzureKeyCredential  
 from azure.identity import DefaultAzureCredential  
 from azure.search.documents import SearchClient  
 from azure.search.documents.models import VectorizedQuery, QueryType, QueryCaptionType  
-from config import SEARCH_ENDPOINT,SEARCH_KEY,SEARCH_INDEX_NAME,SEMANTIC_CONFIG_NAME,READ_FIELDS
+from config import SEARCH_ENDPOINT,SEARCH_INDEX_NAME,SEMANTIC_CONFIG_NAME,READ_FIELDS
 from llm import embed_texts
   
   
@@ -17,19 +16,12 @@ _search_client_instance = None
 def get_search_client() -> SearchClient:  
     global _search_client_instance  
     if _search_client_instance is None:  
-        if SEARCH_KEY:
-            _search_client_instance = SearchClient(  
-                endpoint=SEARCH_ENDPOINT,  
-                index_name=SEARCH_INDEX_NAME,  
-                credential=AzureKeyCredential(SEARCH_KEY)  
-            )         
-        else:
-            credential = DefaultAzureCredential()  
-            _search_client_instance = SearchClient(  
-                endpoint=SEARCH_ENDPOINT,  
-                index_name=SEARCH_INDEX_NAME,  
-                credential=credential,  
-            )  
+        credential = DefaultAzureCredential()  
+        _search_client_instance = SearchClient(  
+            endpoint=SEARCH_ENDPOINT,  
+            index_name=SEARCH_INDEX_NAME,  
+            credential=credential,  
+        )  
     return _search_client_instance  
   
   
@@ -76,7 +68,7 @@ def search_transcripts(
             vector=query_vector,  
             k_nearest_neighbors=50,  
             fields="text_vector",  
-            exhaustive=True,  
+            exhaustive=False,  
         )  
   
     if mode == "hybrid":  

@@ -1,14 +1,16 @@
 # ui/index_service.py
 """Azure AI Search のインデックス作成と、文字起こし JSON のチャンク登録。
 
-- ensure_index(): "documents" インデックスが無ければ作成する（統合ベクトル化対応）。
-  クエリ時のベクトル化は AI Search のベクトライザー（Azure OpenAI）が担う。
+- ensure_index(): "documents" インデックスが無ければ作成する。
 - index_transcript(): 文字起こしの segments をチャンク化し、Azure OpenAI で
   ベクトルを計算して push 登録する。
+
+注: クエリ時のベクトル化も UI 側（managed identity）で行う。OpenAI は
+パブリックアクセス無効のため Search の統合ベクトライザー（Search→OpenAI 呼び出し）は
+使えないので、インデックスにベクトライザーは定義しない。
 """
 import base64
 
-from azure.core.credentials import AzureKeyCredential
 from azure.identity import DefaultAzureCredential
 from azure.search.documents import SearchClient
 from azure.search.documents.indexes import SearchIndexClient
@@ -21,8 +23,6 @@ from azure.search.documents.indexes.models import (
     VectorSearch,
     VectorSearchProfile,
     HnswAlgorithmConfiguration,
-    AzureOpenAIVectorizer,
-    AzureOpenAIVectorizerParameters,
     SemanticConfiguration,
     SemanticSearch,
     SemanticPrioritizedFields,
@@ -31,18 +31,13 @@ from azure.search.documents.indexes.models import (
 
 from config import (
     SEARCH_ENDPOINT,
-    SEARCH_KEY,
     SEARCH_INDEX_NAME,
     SEMANTIC_CONFIG_NAME,
-    AZURE_OPENAI_ENDPOINT,
-    AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
-    AZURE_OPENAI_EMBEDDING_MODEL,
     AZURE_OPENAI_EMBEDDING_DIMENSIONS,
 )
 from llm import embed_texts
 
 _VECTOR_PROFILE = "vprofile-hnsw"
-_VECTORIZER = "vectorizer-aoai"
 _ALGORITHM = "alg-hnsw"
 
 # 1チャンクあたりの目安文字数（segments をこの長さまで連結する）
@@ -51,8 +46,6 @@ _CHUNK_CHAR_LIMIT = 1200
 
 
 def _get_credential():
-    if SEARCH_KEY:
-        return AzureKeyCredential(SEARCH_KEY)
     return DefaultAzureCredential()
 
 
@@ -92,17 +85,6 @@ def _build_index() -> SearchIndex:
             VectorSearchProfile(
                 name=_VECTOR_PROFILE,
                 algorithm_configuration_name=_ALGORITHM,
-                vectorizer_name=_VECTORIZER,
-            )
-        ],
-        vectorizers=[
-            AzureOpenAIVectorizer(
-                vectorizer_name=_VECTORIZER,
-                parameters=AzureOpenAIVectorizerParameters(
-                    resource_url=AZURE_OPENAI_ENDPOINT,
-                    deployment_name=AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
-                    model_name=AZURE_OPENAI_EMBEDDING_MODEL,
-                ),
             )
         ],
     )
@@ -207,18 +189,24 @@ def _chunk_segments(segments: list[dict]) -> list[dict]:
 
 
 def delete_transcript_docs(transcript_path: str) -> int:
-    """同一 transcript_path の既存ドキュメントを削除する（再登録時の重複防止）。"""
+    """同一 transcript_path の既存ドキュメントを削除する（再登録時の重複防止）。
+
+    ヒット件数が多くても取りこぼさないよう、SearchItemPaged の自動ページングで全件の
+    id を収集し、削除 API の 1 リクエスト上限（1000 件）ごとにバッチ削除する。
+    """
     client = get_write_client()
     escaped = transcript_path.replace("'", "''")
+    # top を指定しない → SDK が nextLink を辿って全ページを列挙する
     results = client.search(
         search_text="*",
         filter=f"transcript_path eq '{escaped}'",
         select=["id"],
-        top=1000,
     )
     ids = [{"id": r["id"]} for r in results]
-    if ids:
-        client.delete_documents(documents=ids)
+    if not ids:
+        return 0
+    for i in range(0, len(ids), 1000):
+        client.delete_documents(documents=ids[i : i + 1000])
     return len(ids)
 
 

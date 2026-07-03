@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import azure.functions as func
+from azure.core.exceptions import ClientAuthenticationError
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
 import requests
@@ -36,6 +37,9 @@ MAX_RETRIES = 3
 POLL_INTERVAL_SEC = 30
 MAX_POLL_COUNT = 120  # 120 × 30s = 60 min
 
+# リトライしても回復しない例外（認証・権限不足など）は即座に終端化する。
+_NON_RETRYABLE = (ClientAuthenticationError,)
+
 app = func.FunctionApp()
 
 
@@ -48,6 +52,15 @@ def _credential():
 
 def _blob_svc():
     return BlobServiceClient(STORAGE_URL, credential=_credential())
+
+
+def _input_exists(blob_name: str) -> bool:
+    """input コンテナに対象 blob がまだ存在するか。
+
+    処理成功時は move_to_processed で input から削除されるため、存在しなければ
+    別インスタンスが既に処理済み（Queue の at-least-once 再配信）と判断できる。
+    """
+    return _blob_svc().get_blob_client(CONTAINER_INPUT, blob_name).exists()
 
 
 def _speech_headers():
@@ -286,6 +299,12 @@ def blob_transcribe(msg: func.QueueMessage):
         logging.info("Skipping unsupported file: %s (%s)", blob_name, ext)
         return
 
+    # 冪等性: Queue は at-least-once 配信のため、同一 blob のイベントが再配信され得る。
+    # 処理成功時は input から processed へ移動して消えるので、既に input に無ければスキップ。
+    if not _input_exists(blob_name):
+        logging.info("Input no longer exists (already processed), skipping: %s", blob_name)
+        return
+
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -310,6 +329,12 @@ def blob_transcribe(msg: func.QueueMessage):
             move_to_processed(blob_name)
             logging.info("Completed: %s", blob_name)
             return
+
+        except _NON_RETRYABLE as exc:
+            # 認証/権限エラーはリトライしても無駄なので即座に打ち切る。
+            last_error = exc
+            logging.error("Non-retryable error for %s: %s", blob_name, exc)
+            break
 
         except Exception as exc:
             last_error = exc

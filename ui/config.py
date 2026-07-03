@@ -11,7 +11,6 @@ except Exception:
 
 #Azure OpenAI
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "")
-AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY", "")
 AZURE_OPENAI_CHAT_DEPLOYMENT = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "")
 AZURE_OPENAI_EMBEDDING_DEPLOYMENT = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-large")
 AZURE_OPENAI_EMBEDDING_MODEL = os.getenv("AZURE_OPENAI_EMBEDDING_MODEL", "text-embedding-3-large")
@@ -22,9 +21,12 @@ AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
 # 環境変数名は container-apps.bicep が設定するキーに合わせる
 SEARCH_ENDPOINT = os.environ.get("AZURE_SEARCH_ENDPOINT", "")
 SEARCH_INDEX_NAME = os.environ.get("AZURE_SEARCH_INDEX_NAME", "")
-SEARCH_KEY = os.environ.get("AZURE_SEARCH_KEY", "")
 
-READ_FIELDS = os.getenv("READ_FIELDS", "content").split(",")
+# select 既定は実運用（container-apps.bicep / main.bicep）と揃える。
+# これらのフィールドが取れないと UI の根拠表示（話者・時刻・出典）が欠落するため。
+READ_FIELDS = os.getenv(
+    "READ_FIELDS", "content,source_file,transcript_path,chunk_id,speaker,start_time"
+).split(",")
 SEMANTIC_CONFIG_NAME = os.environ.get("AZURE_SEARCH_SEMANTIC_CONFIG", "default")
 
 """
@@ -44,6 +46,8 @@ READ_FIELDS = [
 STORAGE_ACCOUNT = os.environ.get("DATA_STORAGE_ACCOUNT_NAME", "")
 CONTAINER_INPUT = os.environ.get("CONTAINER_INPUT", "input")
 CONTAINER_OUTPUT = os.environ.get("CONTAINER_OUTPUT", "output")
+CONTAINER_PROCESSED = os.environ.get("CONTAINER_PROCESSED", "processed")
+ACCOUNT_URL = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net"
 CONTAINER_PROCESSED = os.environ.get("CONTAINER_PROCESSED", "processed")
 ACCOUNT_URL = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net"
 BLOB_CONNECTION_STRING = os.getenv("BLOB_CONNECTION_STRING","")

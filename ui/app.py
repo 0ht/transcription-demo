@@ -4,6 +4,7 @@ Streamlit UI - Blob 文字起こしダッシュボード
 """
 
 import json
+import logging
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -26,6 +27,8 @@ try:
             answer_with_context,
         )
 except Exception:
+    # 設定不足なのか実装エラーなのかを切り分けられるようトレースを残す。
+    logging.warning("RAG 機能を無効化しました（インポート/設定の読み込みに失敗）", exc_info=True)
     RAG_ENABLED = False
 
 from blob_service import (

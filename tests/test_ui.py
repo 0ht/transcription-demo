@@ -120,3 +120,35 @@ class TestChunkSegments:
         long_text = "。".join(f"文{i}" for i in range(2000))
         chunks = index_service._chunk_segments([{"speaker": "A", "text": long_text}])
         assert len(chunks) > 1
+
+
+class _FakeWriteClient:
+    """delete_transcript_docs 用のダミー SearchClient。"""
+
+    def __init__(self, hit_count: int):
+        self._hits = [{"id": f"doc-{i}"} for i in range(hit_count)]
+        self.deleted_batches: list[int] = []
+
+    def search(self, **kwargs):
+        # top 未指定でも全件を返す（SDK の自動ページング相当）
+        return iter(self._hits)
+
+    def delete_documents(self, documents):
+        self.deleted_batches.append(len(documents))
+
+
+@pytest.mark.unit
+class TestDeleteTranscriptDocs:
+    def test_no_hits_returns_zero_and_no_delete(self, monkeypatch):
+        fake = _FakeWriteClient(0)
+        monkeypatch.setattr(index_service, "get_write_client", lambda: fake)
+        assert index_service.delete_transcript_docs("p/x.json") == 0
+        assert fake.deleted_batches == []
+
+    def test_deletes_in_batches_of_1000(self, monkeypatch):
+        # 1000 件上限を超えても取りこぼさず、1000 件ごとに分割削除する
+        fake = _FakeWriteClient(2300)
+        monkeypatch.setattr(index_service, "get_write_client", lambda: fake)
+        deleted = index_service.delete_transcript_docs("p/x.json")
+        assert deleted == 2300
+        assert fake.deleted_batches == [1000, 1000, 300]
