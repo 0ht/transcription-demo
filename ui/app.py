@@ -53,6 +53,126 @@ from blob_service import (
 )
 
 
+# ===========================================================================
+# RAG（AIに質問）ヘルパー — 右カラムの常時表示チャットで使用
+# ===========================================================================
+def _run_rag(question, transcript, json_path, source_file, search_mode, top_k, use_query_rewrite, scope="index"):
+    """1件の質問に対して RAG パイプラインを実行し、assistant メッセージ dict を返す。
+
+    scope:
+        "prompt" … 検索せず、この文字起こし本文をそのままプロンプトに入れて回答（この文字起こしに限定）
+        "index"  … Azure AI Search を全文字起こし横断で検索して回答
+    """
+    transcript_text = "\n".join(
+        f"{seg.get('speaker', 'Unknown')}: {seg.get('text', '')}"
+        for seg in transcript.get("segments", [])
+    )
+
+    # --- プロンプト直接モード: この文字起こしのみを根拠に回答（検索・インデックス不要） ---
+    if scope == "prompt":
+        direct_context = [{
+            "source_file": source_file,
+            "transcript_path": json_path,
+            "content": transcript_text[:40000],
+        }]
+        with st.spinner("この文字起こしをもとに回答生成中..."):
+            answer = answer_with_context(question, direct_context, "")
+        return {
+            "role": "assistant",
+            "content": answer,
+            "summary": "",
+            "intent": "",
+            "query": "この文字起こし本文を直接参照（検索なし）",
+            "contexts": [],
+            "scope": "prompt",
+        }
+
+    # --- インデックス参照モード: 全文字起こしを横断検索して回答 ---
+    with st.spinner("現在の通話内容を整理中..."):
+        current_call_summary = summarize_current_call(transcript_text[:12000])
+
+    intent_summary = ""
+    if use_query_rewrite:
+        with st.spinner("質問意図を整理中..."):
+            intent_summary = summarize_question_intent(question)
+        with st.spinner("検索クエリを生成中..."):
+            final_query = generate_search_query_from_intent(
+                question, intent_summary, current_call_summary
+            )
+    else:
+        final_query = question
+
+    with st.spinner("Azure AI Search を検索中..."):
+        contexts = search_transcripts(
+            query=final_query,
+            mode=search_mode,
+            top=top_k,
+            source_file=None,
+            transcript_path=None,
+        )
+
+    if not contexts:
+        return {
+            "role": "assistant",
+            "content": "関連する検索結果が見つかりませんでした。"
+            "『⚙️ 検索設定 / インデックス』からこのファイルを登録済みか確認してください。",
+            "summary": current_call_summary,
+            "intent": intent_summary,
+            "query": final_query,
+            "contexts": [],
+            "scope": "index",
+        }
+
+    with st.spinner("Azure OpenAI で回答生成中..."):
+        answer = answer_with_context(question, contexts, current_call_summary)
+
+    return {
+        "role": "assistant",
+        "content": answer,
+        "summary": current_call_summary,
+        "intent": intent_summary,
+        "query": final_query,
+        "contexts": contexts,
+        "scope": "index",
+    }
+
+
+def _render_assistant_msg(msg):
+    """assistant メッセージ（回答＋根拠）を描画する。"""
+    scope = msg.get("scope")
+    if scope == "prompt":
+        st.caption("🔎 検索範囲: この文字起こしに限定（プロンプト直接）")
+    elif scope == "index":
+        st.caption("🔎 検索範囲: インデックス参照（全文字起こし横断）")
+    st.write(msg.get("content", ""))
+    if msg.get("error"):
+        return
+    with st.expander("🔎 詳細（要約・検索クエリ・根拠）", expanded=False):
+        if msg.get("summary"):
+            st.markdown("**現在通話の要約**")
+            st.write(msg["summary"])
+        if msg.get("intent"):
+            st.markdown("**意図サマリ**")
+            st.write(msg["intent"])
+        if msg.get("query"):
+            st.caption(f"検索クエリ: {msg['query']}")
+        contexts = msg.get("contexts") or []
+        if contexts:
+            st.markdown("**根拠に使った検索結果**")
+            for i, c in enumerate(contexts, 1):
+                title = c.get("source_file", "") or c.get("title", "") or f"doc-{i}"
+                st.markdown(f"**[{i}] {title}**")
+                meta = []
+                if c.get("speaker"):
+                    meta.append(f"speaker: {c['speaker']}")
+                if c.get("start_time"):
+                    meta.append(f"time: {c['start_time']}")
+                if meta:
+                    st.caption(" / ".join(meta))
+                st.write(c.get("content", "") or c.get("chunk", ""))
+                st.divider()
+
+
 st.set_page_config(page_title="文字起こしダッシュボード", layout="wide", page_icon="🎙️")
 st.title("🎙️ Blob 文字起こしダッシュボード")
 
@@ -77,22 +197,6 @@ st.markdown(
     }
     div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:last-child {
         border-right: none;
-    }
-    /* RAG 質問入力欄が固定高さコンテナ(st.container(height=600))内で
-       高さ0に潰れる Streamlit の不具合への対処。
-       st-key-rag_question 配下の高さを明示的に復元する。 */
-    .st-key-rag_question,
-    .st-key-rag_question div[data-testid="stTextArea"],
-    .st-key-rag_question div[data-testid="stTextAreaRootElement"] {
-        height: auto !important;
-        min-height: 130px !important;
-        overflow: visible !important;
-    }
-    .st-key-rag_question textarea {
-        min-height: 120px !important;
-        border: 1px solid rgba(120, 120, 120, 0.55);
-        border-radius: 6px;
-        background: #ffffff;
     }
     /* ファイル名リンク（完了ファイル） */
     a.file-link {
@@ -634,9 +738,17 @@ with list_container:
 
 st.divider()
 
-# --- 下ペイン: 詳細表示 ---
-st.markdown("#### 📝 詳細")
-detail_container = st.container(height=600)
+# --- 下ペイン: 詳細（左）＋ AIに質問（右・常時表示） ---
+detail_col, chat_col = st.columns([2, 1], gap="large")
+
+# 選択中トランスクリプトの共有変数（右カラムの「AIに質問」から参照する）
+_sel_transcript = None
+_sel_json_path = None
+_sel_source_file = None
+
+with detail_col:
+    st.markdown("#### 📝 詳細")
+    detail_container = st.container(height=600)
 with detail_container:
     if "selected" not in st.session_state:
         st.info("↑ 上の一覧から「処理済み」のファイル名をクリックしてください")
@@ -651,6 +763,11 @@ with detail_container:
             st.stop()
 
         source_file = transcript.get("sourceFile", "")
+
+        # 右カラムの「AIに質問」が参照できるよう共有
+        _sel_transcript = transcript
+        _sel_json_path = json_path
+        _sel_source_file = source_file
 
         head_col1, head_col2, head_col3 = st.columns([6, 2, 2])
         head_col1.markdown(f"##### {source_file}")
@@ -708,121 +825,127 @@ with detail_container:
                 unsafe_allow_html=True,
             )
 
-        # ===================================================================
-        # RAG: この文字起こし内容について AI に質問
-        # （Azure OpenAI / AI Search の設定が揃っている場合のみ表示）
-        # ===================================================================
-        if RAG_ENABLED:
-            st.divider()
-            st.markdown("#### 💬 AIに質問")
 
-            st.caption(
-                "質問する前に、この文字起こしを検索インデックスに登録してください。"
-                "内容を更新した場合は再登録できます。"
-            )
-            if st.button("📥 このファイルをインデックスに登録", use_container_width=True):
-                try:
-                    with st.spinner("インデックスを準備中..."):
-                        created = ensure_index()
-                    if created:
-                        st.info("検索インデックスを新規作成しました。")
-                    with st.spinner("既存の登録を整理中..."):
-                        delete_transcript_docs(json_path)
-                    with st.spinner("チャンク化・ベクトル化して登録中..."):
-                        n = index_transcript(transcript, json_path)
-                    if n > 0:
-                        st.success(f"インデックスに {n} 件のチャンクを登録しました。")
-                    else:
-                        st.warning("登録できるテキストがありませんでした。")
-                except Exception as e:
-                    st.error(f"インデックス登録に失敗しました: {e}")
+# ===========================================================================
+# 右カラム: AIに質問（常時表示・会話履歴を保持）
+# ===========================================================================
+with chat_col:
+    st.markdown("#### 💬 AIに質問")
 
-            rag_q = st.text_area(
-                "この文字起こし内容について質問",
-                placeholder="例: この会議で決まったアクションアイテムは？",
-                height=120,
-                key="rag_question",
-            )
+    if not RAG_ENABLED:
+        st.info("Azure OpenAI / AI Search が未設定のため、この機能は利用できません。")
+    elif _sel_json_path is None:
+        st.info("左の一覧から「処理済み」ファイルを選択すると、その内容について質問できます。")
+    else:
+        json_path = _sel_json_path
+        transcript = _sel_transcript
+        source_file = _sel_source_file
 
-            rag_col1, rag_col2, rag_col3 = st.columns([2, 2, 2])
-            search_mode = rag_col1.selectbox(
-                "検索方式",
-                ["semantic_hybrid", "hybrid", "vector", "keyword"],
-                index=0,
-                key="rag_search_mode",
-            )
-            top_k = rag_col2.slider("検索件数", min_value=3, max_value=10, value=5, key="rag_top_k")
-            use_query_rewrite = rag_col3.checkbox("検索語をAIで最適化", value=True, key="rag_rewrite")
+        # 検索範囲の選択（常時表示）
+        scope_label = st.radio(
+            "検索範囲",
+            ["この文字起こしに限定（プロンプト直接）", "インデックスを参照（全文字起こし横断）"],
+            index=0,
+            key="rag_scope",
+            help=(
+                "この文字起こしに限定: 検索せず、この文字起こし本文をそのままAIに渡して回答します"
+                "（インデックス登録は不要）。\n"
+                "インデックスを参照: 登録済みの全文字起こしを Azure AI Search で横断検索して回答します。"
+            ),
+        )
+        scope = "prompt" if scope_label.startswith("この文字起こし") else "index"
 
-            if st.button("🤖 回答生成", type="primary", use_container_width=True):
-                if not rag_q.strip():
-                    st.warning("質問を入力してください。")
-                else:
+        # 既定値（プロンプト直接モードでは未使用）
+        search_mode = "semantic_hybrid"
+        top_k = 5
+        use_query_rewrite = True
+
+        if scope == "index":
+            with st.expander("⚙️ 検索設定 / インデックス", expanded=False):
+                st.caption(
+                    "インデックス参照で検索するには、対象の文字起こしを事前に登録しておく必要があります。"
+                    "内容を更新した場合は再登録できます。"
+                )
+                if st.button(
+                    "📥 このファイルをインデックスに登録",
+                    use_container_width=True,
+                    key="rag_index_btn",
+                ):
                     try:
-                        transcript_path = json_path
-
-                        transcript_text = "\n".join(
-                            f"{seg.get('speaker', 'Unknown')}: {seg.get('text', '')}"
-                            for seg in transcript.get("segments", [])
-                        )
-
-                        with st.spinner("現在の通話内容を整理中..."):
-                            current_call_summary = summarize_current_call(transcript_text[:12000])
-
-                        intent_summary = ""
-                        if use_query_rewrite:
-                            with st.spinner("質問意図を整理中..."):
-                                intent_summary = summarize_question_intent(rag_q)
-                            with st.spinner("検索クエリを生成中..."):
-                                final_query = generate_search_query_from_intent(
-                                    rag_q, intent_summary, current_call_summary
-                                )
+                        with st.spinner("インデックスを準備中..."):
+                            created = ensure_index()
+                        if created:
+                            st.info("検索インデックスを新規作成しました。")
+                        with st.spinner("既存の登録を整理中..."):
+                            delete_transcript_docs(json_path)
+                        with st.spinner("チャンク化・ベクトル化して登録中..."):
+                            n = index_transcript(transcript, json_path)
+                        if n > 0:
+                            st.success(f"インデックスに {n} 件のチャンクを登録しました。")
                         else:
-                            final_query = rag_q
-
-                        st.markdown("##### 現在通話の要約")
-                        st.write(current_call_summary)
-
-                        if intent_summary:
-                            st.markdown("##### 意図サマリ")
-                            st.write(intent_summary)
-
-                        st.caption(f"検索クエリ: {final_query}")
-
-                        with st.spinner("Azure AI Search を検索中..."):
-                            contexts = search_transcripts(
-                                query=final_query,
-                                mode=search_mode,
-                                top=top_k,
-                                source_file=source_file,
-                                transcript_path=transcript_path,
-                            )
-
-                        if not contexts:
-                            st.info("関連する検索結果が見つかりませんでした。")
-                        else:
-                            with st.spinner("Azure OpenAI で回答生成中..."):
-                                answer = answer_with_context(rag_q, contexts, current_call_summary)
-
-                            st.markdown("##### 回答")
-                            st.write(answer)
-
-                            with st.expander("根拠に使った検索結果"):
-                                for i, c in enumerate(contexts, 1):
-                                    title = c.get("source_file", "") or c.get("title", "") or f"doc-{i}"
-                                    st.markdown(f"**[{i}] {title}**")
-
-                                    meta = []
-                                    if c.get("speaker"):
-                                        meta.append(f"speaker: {c['speaker']}")
-                                    if c.get("start_time"):
-                                        meta.append(f"time: {c['start_time']}")
-                                    if meta:
-                                        st.caption(" / ".join(meta))
-
-                                    content = c.get("content", "") or c.get("chunk", "")
-                                    st.write(content)
-                                    st.divider()
-
+                            st.warning("登録できるテキストがありませんでした。")
                     except Exception as e:
-                        st.error(f"RAG回答の生成に失敗しました: {e}")
+                        st.error(f"インデックス登録に失敗しました: {e}")
+
+                search_mode = st.selectbox(
+                    "検索方式",
+                    ["semantic_hybrid", "hybrid", "vector", "keyword"],
+                    index=0,
+                    key="rag_search_mode",
+                )
+                top_k = st.slider("検索件数", min_value=3, max_value=10, value=5, key="rag_top_k")
+                use_query_rewrite = st.checkbox("検索語をAIで最適化", value=True, key="rag_rewrite")
+
+        # ファイル単位の会話履歴ストア
+        chat_store = st.session_state.setdefault("rag_chat", {})
+        history = chat_store.setdefault(json_path, [])
+
+        hdr_l, hdr_r = st.columns([3, 1])
+        hdr_l.caption(f"対象: {source_file}")
+        if hdr_r.button(
+            "🗑️ 履歴",
+            use_container_width=True,
+            key="rag_clear_hist",
+            help="このファイルの会話履歴を消去",
+        ):
+            chat_store[json_path] = []
+            st.rerun()
+
+        hist_box = st.container(height=430)
+        with hist_box:
+            if not history:
+                st.caption("この文字起こしについて質問できます。下の入力欄からどうぞ。")
+            for msg in history:
+                with st.chat_message(msg["role"]):
+                    if msg["role"] == "user":
+                        st.write(msg["content"])
+                    else:
+                        _render_assistant_msg(msg)
+
+            # 末尾がユーザー発話なら回答を生成
+            if history and history[-1]["role"] == "user":
+                with st.chat_message("assistant"):
+                    try:
+                        answer_msg = _run_rag(
+                            question=history[-1]["content"],
+                            transcript=transcript,
+                            json_path=json_path,
+                            source_file=source_file,
+                            search_mode=search_mode,
+                            top_k=top_k,
+                            use_query_rewrite=use_query_rewrite,
+                            scope=scope,
+                        )
+                    except Exception as e:
+                        answer_msg = {
+                            "role": "assistant",
+                            "content": f"回答の生成に失敗しました: {e}",
+                            "error": True,
+                        }
+                    history.append(answer_msg)
+                    _render_assistant_msg(answer_msg)
+
+        prompt = st.chat_input("この文字起こしについて質問…", key="rag_chat_input")
+        if prompt:
+            history.append({"role": "user", "content": prompt})
+            st.rerun()
