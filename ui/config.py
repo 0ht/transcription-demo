@@ -48,8 +48,6 @@ CONTAINER_INPUT = os.environ.get("CONTAINER_INPUT", "input")
 CONTAINER_OUTPUT = os.environ.get("CONTAINER_OUTPUT", "output")
 CONTAINER_PROCESSED = os.environ.get("CONTAINER_PROCESSED", "processed")
 ACCOUNT_URL = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net"
-CONTAINER_PROCESSED = os.environ.get("CONTAINER_PROCESSED", "processed")
-ACCOUNT_URL = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net"
 BLOB_CONNECTION_STRING = os.getenv("BLOB_CONNECTION_STRING","")
 
 
