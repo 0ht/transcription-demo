@@ -229,7 +229,7 @@ module containerApps 'modules/container-apps.bicep' = {
     azureOpenAIId: ai.outputs.openAIId  
     azureOpenAIChatDeployment: ai.outputs.chatDeployment  
     azureOpenAIEmbeddingDeployment: ai.outputs.embeddingDeployment  
-    azureOpenAIApiVersion: '2024-10-21'  
+    azureOpenAIApiVersion: '2025-04-01-preview'  
   
     azureSearchEndpoint: search.outputs.searchEndpoint  
     azureSearchId: search.outputs.searchId  

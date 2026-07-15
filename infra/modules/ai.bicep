@@ -17,13 +17,13 @@ param privateDnsZoneOpenAIId string
 param dataStorageAccountId string
 
 @description('Chat model deployment name')
-param chatDeploymentName string = 'gpt-4.1-mini'
+param chatDeploymentName string = 'gpt-5-mini'
 
 @description('Chat model name')
-param chatModelName string = 'gpt-4.1-mini'
+param chatModelName string = 'gpt-5-mini'
 
 @description('Chat model version')
-param chatModelVersion string = '2025-04-14'
+param chatModelVersion string = '2025-08-07'
 
 @description('Embedding deployment name')
 param embeddingDeploymentName string = 'text-embedding-3-large'

@@ -155,11 +155,11 @@ UI（Streamlit）には、表示中の文字起こしを対象に自然言語で
 | リソース | 命名規則 | ポイント |
 |---------|----------|------|
 | Resource Group | `rg-transcription-{env}` | |
-| VNet + 3 Subnets | `vnet-transcription-{env}` | snet-functions / snet-aca / snet-pe |
+| VNet + 4 Subnets | `vnet-transcription-{env}` | snet-functions / snet-aca / snet-pe / snet-agent（Foundry Agent Service 送信の VNet 注入用・`Microsoft.App/environments` 委任） |
 | Storage (データ) | `sttranscriptiondata{env}` | **`publicNetworkAccess=Enabled`** + `defaultAction=Deny` + Trusted Services bypass + `allowSharedKeyAccess=false`（パブリック EP は公開するが ACL で全拒否、Speech のみ `resourceAccessRules` で許可。`Disabled` だと Speech Batch Trusted Access が機能しないため） |
 | Storage (Functions ランタイム) | `sttranscriptionfunc{env}` | **`publicNetworkAccess=Disabled`** / Flex Consumption 要件 (Blob+Table+Queue PE) / azd デプロイ時のみ hooks で一時開放 |
 | Azure Functions (Flex Consumption) | `func-transcription-{env}-{hash}` | `publicNetworkAccess=Disabled` / VNet 統合 / MI |
-| AI Services (Foundry 親リソース) | `ais-transcription-{env}` | `kind=AIServices` / `disableLocalAuth=true` / MI |
+| AI Services (Foundry 親リソース) | `ais-transcription-{env}` | `kind=AIServices` / `disableLocalAuth=true` / MI / **`networkInjections`（`scenario=agent`）で Agent Service の送信を `snet-agent` に注入**（下記注意参照） |
 | Foundry Project | `proj-transcription-{env}` | Hub 不要スタンドアロン |
 | Azure OpenAI | `oai-transcription-{env}` | RAG 用。`publicNetworkAccess=Disabled` + PE / `disableLocalAuth=true` / `gpt-4.1-mini` + `text-embedding-3-large` をデプロイ / MI |
 | Azure AI Search | `srch-transcription-{env}` | RAG 用。`publicNetworkAccess=disabled` + PE / MI 認証 / `documents` インデックス（UI から push 登録） |
@@ -169,6 +169,12 @@ UI（Streamlit）には、表示中の文字起こしを対象に自然言語で
 | Log Analytics / App Insights | `log-` / `appi-transcription-{env}` | AMPLS 経由。**ingestion=PrivateOnly**（テレメトリ送信は Private Endpoint 経由のみ） / **query=Open**（PoC のため Azure Portal の Logs ブレード ・ ローカル PC から KQL 可能、本番時は PrivateOnly へ切り替え） |
 | Private Endpoints + DNS Zones | 各リソースに対応 | blob/queue/table/cognitive/sites/azurecr/monitor |
 | **Deployer RBAC** | — | azd 実行者（`AZURE_PRINCIPAL_ID`）に Storage Blob/Queue Data Contributor / AcrPush / Log Analytics Reader を自動付与。`infra/modules/deployer-rbac.bicep` 参照。 |
+
+> ⚠️ **Foundry の送信 VNet 統合（network injection）について**
+> AI Services（Foundry）アカウントには `networkInjections`（`scenario: 'agent'`）を設定し、`snet-agent`（`10.0.5.0/24`・`Microsoft.App/environments` 委任・/27 以上）へ **Foundry Agent Service の送信トラフィックを注入**します。
+> - **対象は Agent Service の送信のみ。** 本システムの Batch Transcription（Speech）・OpenAI 推論の送信は対象外で、引き続き Microsoft バックボーン経由（Storage は Trusted Service 認可）です。現時点で Agent Service は未使用のため、これは**将来の Agent 利用に向けた基盤**の位置づけです。
+> - **`networkInjections` は作成時のみ設定可能（create-only / immutable）。** 既存アカウントへの後付けは非サポートで、`azd up` / `azd provision` の増分デプロイでは**スルーされます（エラーにも反映にもならない）**。反映するには Foundry アカウントの **削除 → purge → 再作成** が必要です。
+> - **リージョン制限あり。** Agent の BYO VNet 注入は対応リージョンが限定されます。未対応リージョンでは新規作成が失敗するため、再作成前にリージョン対応を必ず確認してください。
 
 ---
 

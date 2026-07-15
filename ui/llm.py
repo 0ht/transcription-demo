@@ -119,7 +119,7 @@ def summarize_current_call(transcript_text: str) -> str:
             {"role": "system", "content": CURRENT_CALL_SUMMARY_PROMPT},  
             {"role": "user", "content": transcript_text},  
         ],  
-        temperature=0.1,  
+
     )  
     return resp.choices[0].message.content.strip()  
   
@@ -133,7 +133,7 @@ def summarize_question_intent(question: str) -> str:
             {"role": "system", "content": INTENT_SYSTEM_PROMPT},  
             {"role": "user", "content": question},  
         ],  
-        temperature=0.1,  
+
     )  
     return resp.choices[0].message.content.strip()  
   
@@ -162,7 +162,7 @@ def generate_search_query_from_intent(
             {"role": "system", "content": QUERY_SYSTEM_PROMPT},  
             {"role": "user", "content": user_prompt},  
         ],  
-        temperature=0.1,  
+
     )  
     return resp.choices[0].message.content.strip()  
   
@@ -199,6 +199,6 @@ def answer_with_context(
             {"role": "system", "content": ANSWER_SYSTEM_PROMPT},  
             {"role": "user", "content": user_prompt},  
         ],  
-        temperature=0.2,  
+
     )  
     return resp.choices[0].message.content.strip()  

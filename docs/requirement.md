@@ -307,7 +307,7 @@ ACA（Streamlit UI）のフロントエンド Ingress **のみ外部公開**。�
 |----------|------------------|------|
 | Azure Blob Storage | **Private Endpoint**（+ Trusted Service） | Private Endpoint 経由アクセスを基本とする。データストレージは `publicNetworkAccess=Enabled` + `defaultAction=Deny` とし、AI Services のみ `resourceAccessRules` で許可（Speech Batch Transcription の Trusted Access 要件）。ファンクションランタイム用ストレージは `publicNetworkAccess=Disabled`。 |
 | Azure Functions | **VNet 統合 + Private Endpoint** | Functions → 外部通信は VNet 経由。受信も Private Endpoint で制限 |
-| Azure AI Foundry Project | **Private Endpoint** | プロジェクト自体に Private Endpoint を設定。配下の AI Services も閉域アクセス |
+| Azure AI Foundry Project | **Private Endpoint**（受信）+ **network injection**（送信） | プロジェクト自体に Private Endpoint を設定し閉域受信。送信は `networkInjections`（`scenario=agent`）で `snet-agent` に注入し **Agent Service の送信を VNet 統合**。ただし Batch Transcription / OpenAI 推論の送信は対象外（Microsoft バックボーン経由）。`networkInjections` は **create-only**（作成時のみ設定可・後付け不可）。 |
 | Application Insights | **Azure Monitor Private Link Scope (AMPLS)** | ログ送信・クエリを Private Link 経由に制限 |
 | Azure OpenAI | **Private Endpoint**（`privatelink.openai.azure.com`） | チャット/埋め込みを閉域アクセス。クエリのベクトル化は UI 側で実施し Search→OpenAI 呼び出しを回避（3.8 参照） |
 | Azure AI Search | **Private Endpoint** | 文字起こしチャンクのベクトル/セマンティック検索。UI から MI で push 登録・検索 |
@@ -321,6 +321,7 @@ ACA（Streamlit UI）のフロントエンド Ingress **のみ外部公開**。�
 | `snet-functions` | Azure Functions VNet 統合 | `10.0.1.0/24` |
 | `snet-aca` | Container Apps Environment | `10.0.2.0/23` |
 | `snet-privateendpoints` | 各種 Private Endpoint 配置 | `10.0.4.0/24` |
+| `snet-agent` | Foundry Agent Service 送信の VNet 注入（`Microsoft.App/environments` 委任・/27 以上） | `10.0.5.0/24` |
 
 #### その他セキュリティ
 
