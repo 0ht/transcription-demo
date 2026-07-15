@@ -7,6 +7,8 @@ param location string
 param tags object
 @description('Private Endpoint を配置するサブネットのリソース ID。')
 param subnetPrivateEndpointsId string
+@description('Foundry Agent Service の送信トラフィックを注入する専用サブネットのリソース ID（Microsoft.App/environments 委任・/27 以上）。')
+param subnetAgentId string
 @description('Cognitive Services 用 Private DNS ゾーンのリソース ID。')
 param privateDnsZoneCognitiveId string
 @description('Azure OpenAI 用 Private DNS ゾーンのリソース ID。')
@@ -53,6 +55,17 @@ resource aiServices 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = 
     networkAcls: {
       defaultAction: 'Deny'
     }
+    // Foundry Agent Service の送信（アウトバウンド）を VNet の専用サブネットに注入する。
+    // scenario は 'agent' のみサポート（Agent Service 専用）。Batch Transcription / OpenAI 推論の
+    // 送信はこの注入の対象外で、引き続き Microsoft バックボーン経由。
+    // useMicrosoftManagedNetwork: false = 自前の VNet サブネット（BYO VNet）を使用。
+    networkInjections: [
+      {
+        scenario: 'agent'
+        subnetArmId: subnetAgentId
+        useMicrosoftManagedNetwork: false
+      }
+    ]
   }
 }
 

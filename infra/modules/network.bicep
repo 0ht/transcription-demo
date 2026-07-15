@@ -18,6 +18,9 @@ param subnetAcaName string
 @description('Private Endpoint サブネット名')
 param subnetPrivateEndpointsName string
 
+@description('Foundry Agent Service のネットワークインジェクション用サブネット名')
+param subnetAgentName string
+
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   name: vnetName
   location: location
@@ -65,6 +68,24 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
         properties: {
           addressPrefix: '10.0.4.0/24'
           defaultOutboundAccess: false
+        }
+      }
+      {
+        // Foundry Agent Service の送信トラフィックを VNet に注入する専用サブネット。
+        // 要件: Microsoft.App/environments へ委任し、/27 以上のサイズであること。
+        // Agent 専用のため他リソース（Functions / ACA）とは共有しない。
+        name: subnetAgentName
+        properties: {
+          addressPrefix: '10.0.5.0/24'
+          defaultOutboundAccess: false
+          delegations: [
+            {
+              name: 'agent-delegation'
+              properties: {
+                serviceName: 'Microsoft.App/environments'
+              }
+            }
+          ]
         }
       }
     ]
@@ -115,6 +136,7 @@ output vnetId string = vnet.id
 output subnetFunctionsId string = vnet.properties.subnets[0].id
 output subnetAcaId string = vnet.properties.subnets[1].id
 output subnetPrivateEndpointsId string = vnet.properties.subnets[2].id
+output subnetAgentId string = vnet.properties.subnets[3].id
 
 // DNS Zone IDs - dnsZones 辞書のキー名で indexOf 参照。
 // 新規ゾーンの追加によりソート順がずれても名前で解決されるため安全。

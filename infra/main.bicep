@@ -55,6 +55,7 @@ var vnetName = 'vnet-${projectName}-${environmentName}'
 var subnetFunctionsName = 'snet-functions'
 var subnetAcaName = 'snet-aca'
 var subnetPrivateEndpointsName = 'snet-privateendpoints'
+var subnetAgentName = 'snet-agent'
 var logAnalyticsName = 'log-${projectName}-${environmentName}'
 var appInsightsName = 'appi-${projectName}-${environmentName}'
 var amplsName = 'ampls-${projectName}-${environmentName}'
@@ -96,6 +97,7 @@ module network 'modules/network.bicep' = {
     subnetFunctionsName: subnetFunctionsName
     subnetAcaName: subnetAcaName
     subnetPrivateEndpointsName: subnetPrivateEndpointsName
+    subnetAgentName: subnetAgentName
   }
 }
 
@@ -143,6 +145,7 @@ module ai 'modules/ai.bicep' = {
     location: location
     tags: tags
     subnetPrivateEndpointsId: network.outputs.subnetPrivateEndpointsId
+    subnetAgentId: network.outputs.subnetAgentId
     privateDnsZoneCognitiveId: network.outputs.privateDnsZoneCognitiveId
     privateDnsZoneOpenAIId: network.outputs.privateDnsZoneOpenAIId
     dataStorageAccountId: storage.outputs.dataStorageAccountId
