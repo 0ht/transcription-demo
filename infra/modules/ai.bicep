@@ -13,17 +13,19 @@ param subnetAgentId string
 param privateDnsZoneCognitiveId string
 @description('Azure OpenAI 用 Private DNS ゾーンのリソース ID。')
 param privateDnsZoneOpenAIId string
+@description('Foundry / services.ai 用 Private DNS ゾーンのリソース ID。')
+param privateDnsZoneServicesAiId string
 @description('データ用 Storage アカウントのリソース ID。')
 param dataStorageAccountId string
 
 @description('Chat model deployment name')
-param chatDeploymentName string = 'gpt-5-mini'
+param chatDeploymentName string = 'gpt-5.4-mini'
 
 @description('Chat model name')
-param chatModelName string = 'gpt-5-mini'
+param chatModelName string = 'gpt-5.4-mini'
 
 @description('Chat model version')
-param chatModelVersion string = '2025-08-07'
+param chatModelVersion string = '2026-03-17'
 
 @description('Embedding deployment name')
 param embeddingDeploymentName string = 'text-embedding-3-large'
@@ -150,6 +152,7 @@ resource peAiServicesDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroup
     privateDnsZoneConfigs: [
       { name: 'cognitive', properties: { privateDnsZoneId: privateDnsZoneCognitiveId } }
       { name: 'openai', properties: { privateDnsZoneId: privateDnsZoneOpenAIId } }
+      { name: 'servicesai', properties: { privateDnsZoneId: privateDnsZoneServicesAiId } }
     ]
   }
 }

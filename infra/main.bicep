@@ -80,6 +80,8 @@ var foundryProjectName = 'proj-${projectName}-${environmentName}'
 var peAiServicesName = 'pe-ais-${environmentName}'
 var searchName = 'srch-${projectName}-${environmentName}-${resourceToken}'
 var peSearchName = 'pe-srch-${environmentName}'
+var cosmosName = 'cosmos-${take(projClean, 15)}-${take(envClean, 6)}-${resourceToken}'
+var peCosmosName = 'pe-cosmos-${environmentName}'
 
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: rgName
@@ -148,6 +150,7 @@ module ai 'modules/ai.bicep' = {
     subnetAgentId: network.outputs.subnetAgentId
     privateDnsZoneCognitiveId: network.outputs.privateDnsZoneCognitiveId
     privateDnsZoneOpenAIId: network.outputs.privateDnsZoneOpenAIId
+    privateDnsZoneServicesAiId: network.outputs.privateDnsZoneServicesAiId
     dataStorageAccountId: storage.outputs.dataStorageAccountId
     aiServicesName: aiServicesName
     foundryProjectName: foundryProjectName
@@ -171,6 +174,22 @@ module monitoring 'modules/monitoring.bicep' = {
     appInsightsName: appInsightsName
     amplsName: amplsName
     peMonitorName: peMonitorName
+  }
+}
+
+module cosmos 'modules/cosmos.bicep' = {
+  name: 'cosmos'
+  scope: rg
+  params: {
+    projectName: projectName
+    environment: environmentName
+    location: location
+    tags: tags
+    subnetPrivateEndpointsId: network.outputs.subnetPrivateEndpointsId
+    privateDnsZoneCosmosId: network.outputs.privateDnsZoneCosmosId
+    logAnalyticsWorkspaceResourceId: monitoring.outputs.logAnalyticsWorkspaceResourceId
+    cosmosName: cosmosName
+    peCosmosName: peCosmosName
   }
 }
 
@@ -253,6 +272,24 @@ module search 'modules/search.bicep' = {
   }  
 }  
 
+module foundryAgentProject 'modules/foundry-agent-project.bicep' = {
+  name: 'foundry-agent-project'
+  scope: rg
+  params: {
+    aiServicesName: aiServicesName
+    foundryProjectName: foundryProjectName
+    agentSubnetId: network.outputs.subnetAgentId
+    storageAccountName: storage.outputs.dataStorageAccountName
+    searchServiceName: search.outputs.searchServiceName
+    cosmosAccountName: cosmosName
+    appInsightsName: monitoring.outputs.applicationInsightsName
+  }
+  dependsOn: [
+    ai
+    cosmos
+  ]
+}
+
 // ==============================================================================
 // azd 用出力
 // ==============================================================================
@@ -268,3 +305,6 @@ output AZURE_OPENAI_ENDPOINT string = ai.outputs.openAIEndpoint
 output AZURE_OPENAI_CHAT_DEPLOYMENT string = ai.outputs.chatDeployment  
 output AZURE_SEARCH_ENDPOINT string = search.outputs.searchEndpoint  
 output AZURE_SEARCH_INDEX_NAME string = search.outputs.indexName  
+output AZURE_COSMOS_ENDPOINT string = cosmos.outputs.cosmosEndpoint
+output AZURE_COSMOS_DATABASE_NAME string = cosmos.outputs.databaseName
+output AZURE_COSMOS_CONTAINER_NAME string = cosmos.outputs.containerName

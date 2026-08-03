@@ -29,63 +29,70 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
     addressSpace: {
       addressPrefixes: ['10.0.0.0/16']
     }
-    subnets: [
+  }
+}
+
+resource subnetFunctions 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
+  parent: vnet
+  name: subnetFunctionsName
+  properties: {
+    addressPrefix: '10.0.1.0/24'
+    defaultOutboundAccess: false
+    delegations: [
       {
-        name: subnetFunctionsName
+        name: 'functions-delegation'
         properties: {
-          addressPrefix: '10.0.1.0/24'
-          defaultOutboundAccess: false
-          delegations: [
-            {
-              name: 'functions-delegation'
-              properties: {
-                serviceName: 'Microsoft.App/environments'
-              }
-            }
-          ]
+          serviceName: 'Microsoft.App/environments'
         }
       }
+    ]
+  }
+}
+
+resource subnetAca 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
+  parent: vnet
+  name: subnetAcaName
+  properties: {
+    addressPrefix: '10.0.2.0/23'
+    // Container Apps が初回起動の placeholder image (mcr.microsoft.com) や
+    // ACR からのイメージ pull を行うため outbound 許可。
+    // 本番では NAT Gateway + Egress リストで送信先を絞ることを推奨。
+    defaultOutboundAccess: true
+    delegations: [
       {
-        name: subnetAcaName
+        name: 'aca-delegation'
         properties: {
-          addressPrefix: '10.0.2.0/23'
-          // Container Apps が初回起動の placeholder image (mcr.microsoft.com) や
-          // ACR からのイメージ pull を行うため outbound 許可。
-          // 本番では NAT Gateway + Egress リストで送信先を絞ることを推奨。
-          defaultOutboundAccess: true
-          delegations: [
-            {
-              name: 'aca-delegation'
-              properties: {
-                serviceName: 'Microsoft.App/environments'
-              }
-            }
-          ]
+          serviceName: 'Microsoft.App/environments'
         }
       }
+    ]
+  }
+}
+
+resource subnetPrivateEndpoints 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
+  parent: vnet
+  name: subnetPrivateEndpointsName
+  properties: {
+    addressPrefix: '10.0.4.0/24'
+    defaultOutboundAccess: false
+    privateEndpointNetworkPolicies: 'Disabled'
+  }
+}
+
+// Foundry Agent Service の送信トラフィックを VNet に注入する専用サブネット。
+// 要件: Microsoft.App/environments へ委任し、/27 以上のサイズであること。
+// Agent 専用のため他リソース（Functions / ACA）とは共有しない。
+resource subnetAgent 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
+  parent: vnet
+  name: subnetAgentName
+  properties: {
+    addressPrefix: '10.0.5.0/24'
+    defaultOutboundAccess: false
+    delegations: [
       {
-        name: subnetPrivateEndpointsName
+        name: 'agent-delegation'
         properties: {
-          addressPrefix: '10.0.4.0/24'
-          defaultOutboundAccess: false
-        }
-      }
-      {
-        // Foundry Agent Service の送信トラフィックを VNet に注入する専用サブネット。
-        // 要件: Microsoft.App/environments へ委任し、/27 以上のサイズであること。
-        // Agent 専用のため他リソース（Functions / ACA）とは共有しない。
-        name: subnetAgentName
-        properties: {
-          addressPrefix: '10.0.5.0/24'
-          defaultOutboundAccess: false
-          delegations: [
-            {
-              name: 'agent-delegation'
-              properties: {
-                serviceName: 'Microsoft.App/environments'
-              }
-            }
-          ]
+          serviceName: 'Microsoft.App/environments'
         }
       }
     ]
@@ -100,12 +107,14 @@ var dnsZones = {
   functions: 'privatelink.azurewebsites.net'
   cognitive: 'privatelink.cognitiveservices.azure.com'
   openai: 'privatelink.openai.azure.com'
+  servicesai: 'privatelink.services.ai.azure.com'
   acr: 'privatelink.azurecr.io'
   monitor: 'privatelink.monitor.azure.com'
   oms: 'privatelink.oms.opinsights.azure.com'
   ods: 'privatelink.ods.opinsights.azure.com'
   agentsvc: 'privatelink.agentsvc.azure-automation.net'
   search: 'privatelink.search.windows.net'
+  cosmos: 'privatelink.documents.azure.com'
 }
 
 resource privateDnsZones 'Microsoft.Network/privateDnsZones@2024-06-01' = [
@@ -133,10 +142,10 @@ resource vnetLinks 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-0
 
 // Outputs
 output vnetId string = vnet.id
-output subnetFunctionsId string = vnet.properties.subnets[0].id
-output subnetAcaId string = vnet.properties.subnets[1].id
-output subnetPrivateEndpointsId string = vnet.properties.subnets[2].id
-output subnetAgentId string = vnet.properties.subnets[3].id
+output subnetFunctionsId string = subnetFunctions.id
+output subnetAcaId string = subnetAca.id
+output subnetPrivateEndpointsId string = subnetPrivateEndpoints.id
+output subnetAgentId string = subnetAgent.id
 
 // DNS Zone IDs - dnsZones 辞書のキー名で indexOf 参照。
 // 新規ゾーンの追加によりソート順がずれても名前で解決されるため安全。
@@ -147,9 +156,11 @@ output privateDnsZoneTableId string = privateDnsZones[indexOf(dnsZoneKeys, 'tabl
 output privateDnsZoneFunctionsId string = privateDnsZones[indexOf(dnsZoneKeys, 'functions')].id
 output privateDnsZoneCognitiveId string = privateDnsZones[indexOf(dnsZoneKeys, 'cognitive')].id
 output privateDnsZoneOpenAIId string = privateDnsZones[indexOf(dnsZoneKeys, 'openai')].id
+output privateDnsZoneServicesAiId string = privateDnsZones[indexOf(dnsZoneKeys, 'servicesai')].id
 output privateDnsZoneAcrId string = privateDnsZones[indexOf(dnsZoneKeys, 'acr')].id
 output privateDnsZoneMonitorId string = privateDnsZones[indexOf(dnsZoneKeys, 'monitor')].id
 output privateDnsZoneOmsId string = privateDnsZones[indexOf(dnsZoneKeys, 'oms')].id
 output privateDnsZoneOdsId string = privateDnsZones[indexOf(dnsZoneKeys, 'ods')].id
 output privateDnsZoneAgentsvcId string = privateDnsZones[indexOf(dnsZoneKeys, 'agentsvc')].id
 output privateDnsZoneSearchId string = privateDnsZones[indexOf(dnsZoneKeys, 'search')].id
+output privateDnsZoneCosmosId string = privateDnsZones[indexOf(dnsZoneKeys, 'cosmos')].id

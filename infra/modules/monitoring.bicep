@@ -127,3 +127,5 @@ output logAnalyticsWorkspaceId string = logAnalytics.properties.customerId
 output logAnalyticsWorkspaceResourceId string = logAnalytics.id
 output logAnalyticsWorkspaceName string = logAnalytics.name
 output applicationInsightsConnectionString string = appInsights.properties.ConnectionString
+output applicationInsightsName string = appInsights.name
+output applicationInsightsId string = appInsights.id
