@@ -296,6 +296,7 @@ module foundryAgentProject 'modules/foundry-agent-project.bicep' = {
 output AZURE_RESOURCE_GROUP string = rg.name
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = acr.outputs.acrLoginServer
 output AZURE_CONTAINER_REGISTRY_NAME string = acr.outputs.acrName
+output AZURE_FUNCTIONS_STORAGE_ACCOUNT_NAME string = storage.outputs.functionsStorageAccountName
 output SERVICE_FUNCTIONS_RESOURCE_NAME string = functions.outputs.functionAppName
 output SERVICE_UI_RESOURCE_NAME string = containerApps.outputs.containerAppName
 output AZURE_CONTAINER_APP_ENVIRONMENT_NAME string = containerApps.outputs.containerAppEnvironmentName

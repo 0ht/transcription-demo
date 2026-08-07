@@ -7,7 +7,7 @@
 
 ## ⚡ クイックスタート（最短手順）
 
-すでに前提ツール（Azure CLI / azd / Python 3.11+）がインストール済みなら、以下 4 コマンドで完結します。詳細・補足は §0 以降を参照してください。
+すでに前提ツール（Azure CLI / azd / uv）がインストール済みなら、以下のコマンドで完結します。Python 3.11 は `uv` が必要に応じて取得します。詳細・補足は §0 以降を参照してください。
 
 ```powershell
 # 1. ログイン（az / azd の両方）
@@ -216,8 +216,9 @@ UI（Streamlit）には、表示中の文字起こしを対象に自然言語で
 |---|---|
 | **Azure CLI (`az`)** | Azure 操作の汎用 CLI。スクリプトや手動操作で利用。 |
 | **Azure Developer CLI (`azd`)** | アプリ + IaC + デプロイをまとめて扱う「アプリ中心」の CLI。`azd up` 一発でインフラ作成〜コード配置まで完結。 |
+| **uv** | Python バージョン・仮想環境・依存関係を管理するツール。azd hook とローカルテストの実行に使用する。 |
 | **Bicep** | Azure 専用の宣言的 IaC 言語（ARM テンプレートを簡潔にしたもの）。`infra/*.bicep` がそれ。 |
-| **azd フック (preprovision/predeploy/postdeploy)** | `azure.yaml` で定義する PowerShell スクリプト。閉域環境の Public Access 一時開放など、IaC で表現しにくい運用を担当。 |
+| **azd フック (predeploy/postdeploy/predown)** | `azure.yaml` で定義し、`uv run` で実行する Python スクリプト。Public Access の一時開放・再閉鎖や、安全な削除順序の制御を担当する。 |
 
 📚 **参考資料**
 - [Azure Developer CLI とは](https://learn.microsoft.com/azure/developer/azure-developer-cli/overview)
@@ -240,6 +241,7 @@ UI（Streamlit）には、表示中の文字起こしを対象に自然言語で
 | **Python 3.11+** | `winget install Python.Python.3.11` |
 | **Azure CLI** | `winget install Microsoft.AzureCLI` |
 | **azd** | `winget install Microsoft.Azd` |
+| **uv** | `winget install --id astral-sh.uv -e` |
 
 ### 必要バージョン
 
@@ -248,14 +250,43 @@ UI（Streamlit）には、表示中の文字起こしを対象に自然言語で
 | Azure CLI | 2.60+ |
 | azd | 1.9+ |
 | Python | 3.11+ |
+| uv | 最新安定版 |
 
 > **Terraform は不要です。** IaC は Bicep を使用し、azd が自動で処理します。
+
+`uv`を先に導入すれば、Python 3.11 は次のコマンドでもインストールできます。
+
+```powershell
+uv python install 3.11
+```
+
+macOS / Linux では、公式スタンドアロンインストーラーを使用します。
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv python install 3.11
+```
+
+### uv と PEP 723
+
+本リポジトリの azd hook は `uv run hooks/<script>.py` で実行します。各hookの先頭にはPEP 723形式で、必要なPythonバージョンと依存関係を宣言しています。
+
+```python
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+```
+
+`uv run`はこの宣言を読み、分離された実行環境と適合するPythonを選択します。対象バージョンがない場合は自動で取得するため、hook用の仮想環境作成や`pip install`は不要です。将来hookに外部パッケージを追加する場合は、同じPEP 723ブロックの`dependencies`へ明示します。
 
 💡 **`winget` とは**: Windows 11 / 10 標準のパッケージマネージャー (`Windows Package Manager`)。`apt` や `brew` の Windows 版。管理者権限の PowerShell から `winget install <ID>` で導入できます。
 
 📚 **参考資料**
 - [Azure CLI のインストール](https://learn.microsoft.com/cli/azure/install-azure-cli-windows)
 - [Azure Developer CLI のインストール](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd)
+- [uv のインストール](https://docs.astral.sh/uv/getting-started/installation/)
+- [uv で Python スクリプトを実行する](https://docs.astral.sh/uv/guides/scripts/)
 - [Python のダウンロード](https://www.python.org/downloads/)
 - [winget コマンドリファレンス](https://learn.microsoft.com/windows/package-manager/winget/)
 
@@ -271,8 +302,11 @@ az version --output table 2>&1 | Select-Object -First 5
 Write-Host "`n=== azd ==="
 azd version
 
-Write-Host "`n=== Python ==="
-python --version
+Write-Host "`n=== uv ==="
+uv --version
+
+Write-Host "`n=== Python managed by uv ==="
+uv run --python 3.11 python --version
 ```
 
 ---
@@ -564,11 +598,11 @@ Azure に接続せず、ローカルで完結する**純粋ロジックの単体
 
 **実行方法**（プロジェクトルートで）
 ```powershell
-# テスト用依存の導入（初回のみ。実行対象コードの依存も必要）
-pip install -r requirements-test.txt -r ui/requirements.txt
-
-# 実行
-pytest
+# uv が一時環境を作成し、依存関係を導入して実行
+uv run --python 3.11 `
+  --with-requirements requirements-test.txt `
+  --with-requirements ui/requirements.txt `
+  pytest
 ```
 
 Azure リソースへの接続は不要で、外部依存（Blob/OpenAI/Search）はモック化されています。実リソースを使う一気通貫の確認は次のセクション 9（E2E）を参照してください。
@@ -716,16 +750,56 @@ Write-Host "Done. Public IP allow list cleared. Storage continues to allow only 
 
 **注意: この操作は元に戻せません。** 全リソースが削除されます。
 
-💡 **`azd down --purge`**: リソースグループ内の全リソースを削除し、さらに Key Vault や AI Services などの「ソフトデリート対応リソース」も完全パージします。`--purge` を付けないと同名で再作成できない（または `purge` 権限不足エラー）ことがあります。
+### Foundry の削除順序と SAL
+
+Foundry Agent Service の VNet 注入では、Capability Host が Agent subnet に Service Association Link（SAL）を作成します。また、Functions と Container Apps の VNet 統合も `Microsoft.App/environments` の SAL を作成します。Microsoft の [Foundry Private Network Cleanup](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/deployment-tools/cleanup) は、リソースグループを直接削除するだけでは不十分であると明記しています。SAL が残っている subnet は再委任・変更・削除できません。
+
+本リポジトリの `predown` hook は、`azd down` の前に次の順序で処理します。
+
+1. Function App を削除する。
+2. Container App と Container Apps Environment を削除する。
+3. Project-level Capability Host を削除する。
+4. Account-level Capability Host を削除する。
+5. Foundry Project を削除する。
+6. AI Services account を削除して purge する。
+7. 残存する soft-deleted account を purge する。
+8. SAL の消失を最大 20 分待機する。
+9. SAL が消失した場合だけ Azure Monitor Private Link Scope を削除し、`azd down` を続行する。
+
+SAL の解除は Capability Host の削除後に Azure 側で非同期に行われます。20 分以内に消えない場合、hook は安全のため非ゼロで終了し、`azd down` を中止します。Microsoft の公式 cleanup ではバックエンド処理に最大 24 時間かかる場合があるとされています。時間を置いて `azd down --purge` を再実行してください。
+
+> **所有元リソースが既に無い場合**: Foundry account と Capability Host が既に存在せず、`legionservicelink` が `allowDelete=false` のまま残っている場合、新しい hook から過去の所有元を削除し直すことはできません。SAL を CLI や subnet の更新で強制削除しないでください（できません）。Azure Virtual Network の公式トラブルシューティングに従い、`linkedResourceType` を添えて Azure Support にバックエンドクリーンアップを依頼します。hook は、この状態の再発防止を目的とします。
+
+SAL の状態を確認します。
+
+```powershell
+$rg = (azd env get-value AZURE_RESOURCE_GROUP)
+$vnet = (az network vnet list -g $rg --query "[0].name" --output tsv)
+
+az network vnet subnet show `
+  --resource-group $rg `
+  --vnet-name $vnet `
+  --name snet-agent `
+  --query "serviceAssociationLinks[].{Name:name, LinkedResourceType:linkedResourceType, AllowDelete:allowDelete, State:provisioningState}" `
+  --output table
+```
+
+`linkedResourceType` は SAL を所有する Azure サービスを示します。所有リソースが残っている場合は、そのリソースを先に正規の手順で削除します。所有リソースを削除しても SAL が残る場合は、まず 10〜15 分待機して再確認します。それでも残る場合は Azure Support に問い合わせます。
+
+### azd による削除
+
+`azd down --purge` は `azure.yaml` の `predown` hook を実行してから、リソースグループ内のリソースと soft-delete 対応リソースを削除します。hook の SAL 確認をスキップして `az group delete` で強制削除しないでください。
 
 ```powershell
 # 環境全体の削除（確認プロンプトあり）
-# azd down --purge
+azd down --purge
 ```
 
 📚 **参考資料**
+- [Foundry Private Network Cleanup（Microsoft 公式サンプル）](https://github.com/microsoft-foundry/foundry-samples/tree/main/infrastructure/infrastructure-setup-bicep/deployment-tools/cleanup)
+- [Virtual Network / subnet を削除・変更できない場合の診断](https://learn.microsoft.com/troubleshoot/azure/virtual-network/virtual-network-troubleshoot-cannot-delete-modify-subnet)
 - [azd down コマンド](https://learn.microsoft.com/azure/developer/azure-developer-cli/reference#azd-down)
-- [Cognitive Services のソフトデリート](https://learn.microsoft.com/azure/ai-services/recover-purge-resources)
+- [削除済み Microsoft Foundry リソースの復旧と purge](https://learn.microsoft.com/azure/ai-services/recover-purge-resources)
 
 ---
 
@@ -864,7 +938,7 @@ azd provision
 
 本リリース（Stage 1 / 検証用）の実装範囲と、本番運用に向けて段階的に追加すべき項目を整理します。
 
-### 15.1 現状サマリ（Stage 1 で完了している項目）
+### 15.1 現状サマリ（完了している項目）
 
 | カテゴリ | 実装内容 |
 |----------|----------|

@@ -52,6 +52,9 @@ resource subnetFunctions 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' 
 resource subnetAca 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
   parent: vnet
   name: subnetAcaName
+  dependsOn: [
+    subnetFunctions
+  ]
   properties: {
     addressPrefix: '10.0.2.0/23'
     // Container Apps が初回起動の placeholder image (mcr.microsoft.com) や
@@ -72,6 +75,9 @@ resource subnetAca 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
 resource subnetPrivateEndpoints 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
   parent: vnet
   name: subnetPrivateEndpointsName
+  dependsOn: [
+    subnetAca
+  ]
   properties: {
     addressPrefix: '10.0.4.0/24'
     defaultOutboundAccess: false
@@ -85,6 +91,9 @@ resource subnetPrivateEndpoints 'Microsoft.Network/virtualNetworks/subnets@2024-
 resource subnetAgent 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
   parent: vnet
   name: subnetAgentName
+  dependsOn: [
+    subnetPrivateEndpoints
+  ]
   properties: {
     addressPrefix: '10.0.5.0/24'
     defaultOutboundAccess: false

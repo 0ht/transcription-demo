@@ -30,10 +30,12 @@ RAG: UI ─▶ Azure AI Search（ベクトル+セマンティック） / Azure O
 
 ## デプロイ
 
-[Azure Developer CLI (azd)](https://learn.microsoft.com/azure/developer/azure-developer-cli/) を使用します。
+[Azure Developer CLI (azd)](https://learn.microsoft.com/azure/developer/azure-developer-cli/) と、azd hook の Python 実行環境を管理する [uv](https://docs.astral.sh/uv/) を使用します。事前に Azure CLI、azd、uv をインストールしてください。
 
 ```powershell
+az login
 azd auth login
+azd init -e dev
 azd up          # プロビジョニング + デプロイ
 ```
 
@@ -44,8 +46,10 @@ azd up          # プロビジョニング + デプロイ
 単体テストは Azure に接続せず、外部依存（Blob / OpenAI / Search）をモック化してローカルで実行できます。
 
 ```powershell
-pip install -r requirements-test.txt -r ui/requirements.txt
-pytest
+uv run --python 3.11 `
+   --with-requirements requirements-test.txt `
+   --with-requirements ui/requirements.txt `
+   pytest
 ```
 
 対象は出力パス生成・テキスト/JSON 抽出・検索フィルタ生成・チャンク分割・冪等性判定などの純粋ロジックです。

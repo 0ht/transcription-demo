@@ -27,126 +27,25 @@ hooks:
   predeploy:
     posix:
       shell: sh
-      run: |
-        echo ">>> Temporarily enabling public access for deployment..."
-        FUNC_ID=$(az functionapp show -n "$SERVICE_FUNCTIONS_RESOURCE_NAME" -g "$AZURE_RESOURCE_GROUP" --query id -o tsv 2>/dev/null)
-        if [ -n "$FUNC_ID" ]; then
-          az resource update --ids "$FUNC_ID" --set properties.publicNetworkAccess=Enabled --output none
-        fi
-        az acr update -n "$AZURE_CONTAINER_REGISTRY_NAME" --public-network-enabled true --default-action Allow --output none 2>/dev/null || true
-        FUNC_ST=$(az storage account list -g "$AZURE_RESOURCE_GROUP" --query "[?contains(name,'func')].name | [0]" -o tsv 2>/dev/null)
-        if [ -n "$FUNC_ST" ]; then
-          az storage account update -n "$FUNC_ST" -g "$AZURE_RESOURCE_GROUP" --public-network-access Enabled --default-action Allow --output none
-        fi
-        echo ">>> Configuring UI Container App registry with System Assigned MI..."
-        az containerapp registry set -n "$SERVICE_UI_RESOURCE_NAME" -g "$AZURE_RESOURCE_GROUP" --server "$AZURE_CONTAINER_REGISTRY_ENDPOINT" --identity system --output none 2>/dev/null || true
-        # 固定 sleep ではファイアウォール伝播が間に合わずリモートビルドのアップロードが
-        # ハングする（publish タイムアウトの原因）。ACR パブリック EP が実際に到達可能
-        # （/v2/ が 401 を返す＝開放済み。403 はまだファイアウォール拒否）になるまでポーリング。
-        echo ">>> Waiting for ACR public endpoint to become reachable..."
-        DEADLINE=$(( $(date +%s) + 300 ))
-        READY=0
-        while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-          CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://$AZURE_CONTAINER_REGISTRY_ENDPOINT/v2/" || echo "000")
-          if [ "$CODE" = "401" ]; then READY=1; break; fi
-          echo ">>> ACR not ready yet (HTTP $CODE), retrying in 10s..."
-          sleep 10
-        done
-        if [ "$READY" = "1" ]; then
-          echo ">>> ACR public endpoint is reachable."
-        else
-          echo ">>> WARNING: ACR public endpoint not confirmed reachable within timeout; proceeding anyway."
-        fi
+      run: uv run hooks/enable_public_access.py
     windows:
       shell: pwsh
-      run: |
-        Write-Host ">>> Temporarily enabling public access for deployment..."
-        $funcId = az functionapp show -n $env:SERVICE_FUNCTIONS_RESOURCE_NAME -g $env:AZURE_RESOURCE_GROUP --query id -o tsv 2>$null
-        if ($funcId) {
-          az resource update --ids $funcId --set properties.publicNetworkAccess=Enabled --output none
-        }
-        az acr update -n $env:AZURE_CONTAINER_REGISTRY_NAME --public-network-enabled true --default-action Allow --output none 2>$null
-        $funcSt = az storage account list -g $env:AZURE_RESOURCE_GROUP --query "[?contains(name,'func')].name | [0]" -o tsv 2>$null
-        if ($funcSt) {
-          az storage account update -n $funcSt -g $env:AZURE_RESOURCE_GROUP --public-network-access Enabled --default-action Allow --output none
-        }
-        Write-Host ">>> Configuring UI Container App registry with System Assigned MI..."
-        az containerapp registry set -n $env:SERVICE_UI_RESOURCE_NAME -g $env:AZURE_RESOURCE_GROUP --server $env:AZURE_CONTAINER_REGISTRY_ENDPOINT --identity system --output none 2>$null
-        # 固定 sleep ではファイアウォール伝播が間に合わずリモートビルドのアップロードが
-        # ハングする（publish タイムアウトの原因）。ACR パブリック EP が実際に到達可能
-        # （/v2/ が 401 を返す＝開放済み。403 はまだファイアウォール拒否）になるまでポーリング。
-        Write-Host ">>> Waiting for ACR public endpoint to become reachable..."
-        $acrHost = $env:AZURE_CONTAINER_REGISTRY_ENDPOINT
-        $deadline = (Get-Date).AddMinutes(5)
-        $ready = $false
-        while ((Get-Date) -lt $deadline) {
-          try {
-            $resp = Invoke-WebRequest -Uri "https://$acrHost/v2/" -Method Get -SkipHttpErrorCheck -TimeoutSec 10
-            if ($resp.StatusCode -eq 401) { $ready = $true; break }
-            Write-Host ">>> ACR not ready yet (HTTP $($resp.StatusCode)), retrying in 10s..."
-          } catch {
-            Write-Host ">>> ACR not reachable yet ($($_.Exception.Message)), retrying in 10s..."
-          }
-          Start-Sleep -Seconds 10
-        }
-        if ($ready) {
-          Write-Host ">>> ACR public endpoint is reachable."
-        } else {
-          Write-Warning ">>> ACR public endpoint not confirmed reachable within timeout; proceeding anyway."
-        }
+      run: uv run hooks/enable_public_access.py
 
   # デプロイ完了後に Public Access を閉鎖
   postdeploy:
     posix:
       shell: sh
-      run: |
-        echo ">>> Re-disabling public access after deployment..."
-        FUNC_ID=$(az functionapp show -n "$SERVICE_FUNCTIONS_RESOURCE_NAME" -g "$AZURE_RESOURCE_GROUP" --query id -o tsv 2>/dev/null)
-        if [ -n "$FUNC_ID" ]; then
-          az resource update --ids "$FUNC_ID" --set properties.publicNetworkAccess=Disabled --output none
-        fi
-        az acr update -n "$AZURE_CONTAINER_REGISTRY_NAME" --public-network-enabled false --default-action Deny --output none 2>/dev/null || true
-        FUNC_ST=$(az storage account list -g "$AZURE_RESOURCE_GROUP" --query "[?contains(name,'func')].name | [0]" -o tsv 2>/dev/null)
-        if [ -n "$FUNC_ST" ]; then
-          az storage account update -n "$FUNC_ST" -g "$AZURE_RESOURCE_GROUP" --public-network-access Disabled --default-action Deny --output none
-        fi
-        echo ">>> Public access disabled."
+      run: uv run hooks/disable_public_access.py
     windows:
       shell: pwsh
-      run: |
-        Write-Host ">>> Re-disabling public access after deployment..."
-        $funcId = az functionapp show -n $env:SERVICE_FUNCTIONS_RESOURCE_NAME -g $env:AZURE_RESOURCE_GROUP --query id -o tsv 2>$null
-        if ($funcId) {
-          az resource update --ids $funcId --set properties.publicNetworkAccess=Disabled --output none
-        }
-        az acr update -n $env:AZURE_CONTAINER_REGISTRY_NAME --public-network-enabled false --default-action Deny --output none 2>$null
-        $funcSt = az storage account list -g $env:AZURE_RESOURCE_GROUP --query "[?contains(name,'func')].name | [0]" -o tsv 2>$null
-        if ($funcSt) {
-          az storage account update -n $funcSt -g $env:AZURE_RESOURCE_GROUP --public-network-access Disabled --default-action Deny --output none
-        }
-        Write-Host ">>> Public access disabled."
+      run: uv run hooks/disable_public_access.py
 
-  # azd down 前に AMPLS(Private Link Scope)を削除してワークスペースのパージブロックを回避
+  # VNet 統合を解除できた場合のみ、AMPLS を削除して azd down を続行
   predown:
     posix:
       shell: sh
-      run: |
-        echo ">>> Deleting Azure Monitor Private Link Scopes before teardown..."
-        AMPLS_IDS=$(az resource list -g "$AZURE_RESOURCE_GROUP" --resource-type "microsoft.insights/privatelinkscopes" --query "[].id" -o tsv 2>/dev/null)
-        for ID in $AMPLS_IDS; do
-          echo ">>> Deleting $ID"
-          az resource delete --ids "$ID" --output none 2>/dev/null || true
-        done
-        echo ">>> AMPLS cleanup complete."
+      run: uv run hooks/predown.py
     windows:
       shell: pwsh
-      run: |
-        Write-Host ">>> Deleting Azure Monitor Private Link Scopes before teardown..."
-        $amplsIds = az resource list -g $env:AZURE_RESOURCE_GROUP --resource-type "microsoft.insights/privatelinkscopes" --query "[].id" -o tsv 2>$null
-        foreach ($id in $amplsIds) {
-          if ($id) {
-            Write-Host ">>> Deleting $id"
-            az resource delete --ids $id --output none 2>$null
-          }
-        }
-        Write-Host ">>> AMPLS cleanup complete."
+      run: uv run hooks/predown.py
