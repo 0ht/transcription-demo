@@ -28,9 +28,11 @@ hooks:
     posix:
       shell: sh
       run: uv run hooks/setup_search.py
+      interactive: true
     windows:
       shell: pwsh
       run: uv run hooks/setup_search.py
+      interactive: true
 
   # 閉域リソースへのデプロイのため一時的に Public Access を開放
   predeploy:

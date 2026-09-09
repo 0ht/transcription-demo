@@ -27,6 +27,7 @@ SEARCH_AUDIENCE = "https://search.azure.com"
 EMBEDDING_DIMENSIONS = 3072
 PUBLIC_READY_TIMEOUT = 300
 POLL_INTERVAL = 10
+CLI_PROGRESS_INTERVAL = 30
 
 INDEX_NAME_DEFAULT = "documents"
 DATASOURCE_NAME = "ds-transcripts"
@@ -48,17 +49,33 @@ def _az_exe() -> str:
     return exe
 
 
-def az(*args: str, parse: bool = True):
-    result = subprocess.run(
+def az(
+    *args: str,
+    parse: bool = True,
+    progress_message: str | None = None,
+    progress_interval: int = CLI_PROGRESS_INTERVAL,
+):
+    process = subprocess.Popen(
         [_az_exe(), *args],
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        check=False,
     )
-    if result.returncode != 0:
-        message = result.stderr.strip() or result.stdout.strip()
+    elapsed = 0
+    while True:
+        try:
+            stdout, stderr = process.communicate(
+                timeout=progress_interval if progress_message else None
+            )
+            break
+        except subprocess.TimeoutExpired:
+            elapsed += progress_interval
+            LOGGER.info("%s（%d 秒経過）", progress_message, elapsed)
+
+    if process.returncode != 0:
+        message = stderr.strip() or stdout.strip()
         raise RuntimeError(f"az {' '.join(args)} failed: {message}")
-    out = result.stdout.strip()
+    out = stdout.strip()
     if not parse or not out:
         return out or None
     try:
@@ -114,11 +131,13 @@ def approve_shared_private_link(target_resource_id: str, label: str) -> None:
 
 def set_search_public_access(search_id: str, enabled: bool) -> None:
     state = "enabled" if enabled else "disabled"
+    action = "一時開放" if enabled else "再閉鎖"
     az(
         "resource", "update",
         "--ids", search_id,
         "--set", f"properties.publicNetworkAccess={state}",
         "--api-version", "2023-11-01",
+        progress_message=f"Azure AI Search の {action} を処理中",
     )
     LOGGER.info("Azure AI Search public access: %s", state)
 
