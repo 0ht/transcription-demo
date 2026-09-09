@@ -15,7 +15,7 @@ graph TB
     User -->|HTTPS| ACA
 
     subgraph ACA_Env["Azure Container Apps Environment<br/>(外部公開)"]
-        ACA["Streamlit UI"]
+        ACA["FastAPI UI"]
     end
 
     ACA -.->|VNet 統合| VNET
@@ -57,12 +57,13 @@ graph TB
 
     ACA -.->|Private Endpoint 経由| BlobOutput
     ACA -.->|Private Endpoint 経由| BlobProcessed
-    ACA -.->|チャンク登録 / ベクトル検索| SearchIndex
-    ACA -.->|クエリ埋め込み / 回答生成| ChatModel
-    ACA -.-> EmbedModel
+    BlobOutput -.->|Indexer / Shared Private Link| SearchIndex
+    SearchIndex -.->|統合ベクトル化 / Shared Private Link| EmbedModel
+    ACA -.->|VectorizableTextQuery| SearchIndex
+    ACA -.->|回答生成| ChatModel
 ```
 
-**ネットワーク方針**: ACA（Streamlit UI）の Ingress のみ外部公開。それ以外の全リソースは **Private Endpoint / VNet 統合** によるクローズド構成とする。
+**ネットワーク方針**: ACA（FastAPI UI）の Ingress のみ外部公開。それ以外の全リソースは **Private Endpoint / VNet 統合** によるクローズド構成とする。
 
 ## 3. 機能要件
 
@@ -81,12 +82,9 @@ graph TB
 |----------|--------|----------|
 | 音声 | `.wav`, `.mp3`, `.m4a`, `.ogg`, `.flac`, `.wma` | Azure AI Speech で文字起こし |
 | テキスト | `.txt`, `.md`, `.json`, `.vtt` | テキスト抽出（そのままスクリプトとして保存。`.json` は整形して保存） |
-| 動画（クライアント側変換） | `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi` | UI のブラウザ内 `ffmpeg.wasm` で音声トラックを **`.mp3` (libmp3lame, 64 kbps mono 16 kHz)** に再エンコード → サーバには音声のみアップロード（サーバ側 FFmpeg 不要） |
-| 対象外 | 上記以外（`.docx`/`.pdf` を含むバイナリ、画像、ZIP など） | 処理スキップ。ログに記録 |
+| 対象外 | 上記以外（動画、`.docx`/`.pdf` を含むバイナリ、画像、ZIP など） | 処理スキップ。ログに記録 |
 
-> **動画対応について**: サーバ側 FFmpeg を持たず（Flex Consumption の制約）、UI 側 Streamlit カスタムコンポーネント (`ui/components/ffmpeg_extractor/`) でブラウザ内変換しています。詳細は [deploy-guide.md](deploy-guide.md) 参照。巨大動画（目安: 500MB 超）はブラウザメモリの制約で失敗する可能性があるため、その場合は Azure Video Indexer 連携を検討します。
->
-> ⚠️ **出力フォーマットは MP3 固定**: 当初は AAC/m4a を出力していたが、ffmpeg.wasm の native AAC encoder + `ipod` コンテナでは `moov` atom がファイル末尾配置となり Azure Speech Batch Transcription が `InvalidData` で拒否するため、libmp3lame に切り替えました。
+動画を処理する場合は、Functions へ投入する前に音声トラックを対応音声形式へ変換する。
 
 ### 3.3 文字起こし処理
 
@@ -212,7 +210,7 @@ processed/
 
 | 項目 | 内容 |
 |------|------|
-| フレームワーク | Python Streamlit |
+| フレームワーク | Python FastAPI + Jinja2 + JavaScript |
 | ホスティング | Azure Container Apps |
 | 認証 | なし（`allowedIpRanges` による社内 IP 制限のみ、将来的に Microsoft Entra ID 認証追加予定） |
 
@@ -220,13 +218,15 @@ processed/
 
 | 画面 | 機能 |
 |------|------|
+| リアルタイム文字起こし | WebSocket で音声を送信し、リアルタイム結果を表示 |
+| 履歴 | 会議履歴、分析結果、チャット履歴を表示 |
 | ファイル一覧 | 処理済みファイルの一覧表示（日付・ファイル名・ステータス・処理日時） |
 | 文字起こし結果表示 | 選択したファイルのトランスクリプトを表示。話者ごとに色分け |
 | 元ファイル再生 | 音声ファイルの再生プレーヤー（processed コンテナから取得） |
-| システムログ | Functions ログ表示、Queue 状態確認（Log Analytics 連携） |
 | 検索・フィルタ | 日付範囲、ファイル名、キーワードでの絞り込み |
 | ダウンロード | txt / JSON ファイルのダウンロード |
 | AI質問（RAG） | 表示中の文字起こしを対象に自然言語で質問し、根拠付きで回答（3.8 参照） |
+| OCR | 文書アップロード、OCR 実行、結果閲覧・ダウンロード |
 
 ### 3.7 エラーハンドリング
 
@@ -247,42 +247,41 @@ UI 上で、表示中の文字起こしを対象に自然言語で質問し、�
 
 | 項目 | 内容 |
 |------|------|
-| AI 基盤 | Azure OpenAI（チャット: `gpt-4.1-mini` / 埋め込み: `text-embedding-3-large` 3,072 次元） |
+| AI 基盤 | Azure OpenAI（チャットモデル / 埋め込み: `text-embedding-3-large` 3,072 次元） |
 | 検索基盤 | Azure AI Search（`documents` インデックス。ベクトル + セマンティック ハイブリッド検索） |
-| 認証 | UI の Managed Identity（キーレス）。OpenAI / Search ともに `disableLocalAuth` |
+| 認証 | UI と Search の Managed Identity（キーレス）。AI Services / Search ともにローカル認証を無効化 |
 | 有効化条件 | `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_CHAT_DEPLOYMENT` / `AZURE_SEARCH_ENDPOINT` が揃うと自動で有効（`RAG_ENABLED`）。未設定時は質問 UI を非表示にし、ダッシュボード本体は動作 |
 
-#### インデックス登録（push 型）
+#### インデックス登録（indexer + 統合ベクトル化）
 
-検索インデックスへの登録は **アプリ側で埋め込みを計算して push する方式**（indexer / skillset を使う pull 型ではない）。
+`azd provision` の `postprovision` フックが Search のデータプレーンを構成し、`output` コンテナの文字起こし JSON を pull 型で登録する。
 
-1. UI の「📥 このファイルをインデックスに登録」ボタンで起動
-2. `documents` インデックスが無ければ作成（`ensure_index`）
-3. 文字起こし `segments` を約 1,200 文字単位にチャンク化（巨大セグメントは改行・句点優先で内部分割し、埋め込みの 8,192 トークン上限を回避）
-4. Azure OpenAI でチャンクをベクトル化（16 件ずつバッチ）
-5. 同一ファイルの既存ドキュメントを削除してから `upload_documents` で登録（再登録時の重複防止）
+1. Search から Storage と Azure OpenAI への shared private link を承認する
+2. `documents` index、`ds-transcripts` datasource、`ss-transcripts` skillset、`ix-transcripts` indexer を作成する
+3. Merge skill で `segments/*/text` を結合する
+4. Split skill で最大 2,000 文字、500 文字オーバーラップのチャンクに分割する
+5. Azure OpenAI embedding skill で 3,072 次元ベクトルを生成する
+6. index projection でチャンクごとの子ドキュメントを `documents` に格納する
 
-> **push 型を採用した理由**: OpenAI / Search ともに閉域（`publicNetworkAccess=Disabled`）のため、Search 側の統合ベクトル化（Search→OpenAI 呼び出し）は shared private link を別途張らない限り 403 になる。アプリ側ベクトル化なら UI の Private Endpoint 経由でそのまま動作し、追加コストも不要。
+Search は通常 `publicNetworkAccess=Disabled` とし、Storage / Azure OpenAI への通信は shared private link を使用する。`postprovision` のデータプレーン設定中だけ Public Access を一時的に有効化し、終了時に必ず無効化する。
 
 #### 質問〜回答（検索パイプライン）
 
-1. 質問の意図を要約（`gpt-4.1-mini`）
+1. 質問の意図をチャットモデルで要約する
 2. 意図から検索クエリを生成（AI 最適化は ON/OFF 可能）
-3. **クエリのベクトルを UI 側で計算**し、`VectorizedQuery` で Azure AI Search を検索（hybrid / semantic_hybrid / vector / keyword）
+3. UI が `VectorizableTextQuery` を Search へ送り、Search の vectorizer が Azure OpenAI でクエリをベクトル化する
 4. 検索ヒットのみを根拠に回答を生成（出典番号 `[1][2]` 付き）
-
-> ⚠️ **検索時も Search→OpenAI 呼び出しを回避**: クエリのベクトル化を UI 側で行うことで、閉域の OpenAI に対する統合ベクトル化の 403 を防いでいる。
 
 #### インデックス スキーマ（`documents`）
 
 | フィールド | 型 | 役割 |
 |-----------|-----|------|
-| `id` | String (key) | `transcript_path#chunk_id` を base64 化した一意キー |
-| `content` | SearchableString | チャンク本文（全文 + セマンティック対象） |
+| `id` | String (key/searchable, keyword analyzer) | index projection が生成する一意キー。projection target の要件として `keyword` analyzer を設定 |
+| `parent_id` | String (filter) | 元の文字起こし JSON とチャンクを関連付ける親キー |
+| `chunk` | SearchableString | チャンク本文（全文 + セマンティック対象） |
 | `source_file` | String (filter/facet) | 元音声ファイル名 |
-| `transcript_path` | String (filter) | 文字起こし JSON のパス（フィルタ・削除キー） |
-| `chunk_id` | Int32 (filter/sort) | チャンク連番 |
-| `speaker` / `start_time` | String | 話者・開始時刻メタデータ |
+| `transcript_path` | String (filter) | 文字起こし JSON の Storage パス |
+| `title` | SearchableString | セマンティック検索の title field |
 | `text_vector` | Collection(Single) | 埋め込みベクトル（3,072 次元 / HNSW） |
 
 ## 4. 非機能要件
@@ -299,7 +298,7 @@ UI 上で、表示中の文字起こしを対象に自然言語で質問し、�
 
 #### ネットワーク構成方針
 
-ACA（Streamlit UI）のフロントエンド Ingress **のみ外部公開**。バックエンドリソースは **すべて Private VNet 内のクローズド構成** とする。
+ACA（FastAPI UI）のフロントエンド Ingress **のみ外部公開**。バックエンドリソースは **すべて Private VNet 内のクローズド構成** とする。
 
 #### Private Endpoint / VNet 統合 対象
 
@@ -309,8 +308,8 @@ ACA（Streamlit UI）のフロントエンド Ingress **のみ外部公開**。�
 | Azure Functions | **VNet 統合 + Private Endpoint** | Functions → 外部通信は VNet 経由。受信も Private Endpoint で制限 |
 | Azure AI Foundry Project | **Private Endpoint**（受信）+ **network injection**（送信） | プロジェクト自体に Private Endpoint を設定し閉域受信。送信は `networkInjections`（`scenario=agent`）で `snet-agent` に注入し **Agent Service の送信を VNet 統合**。ただし Batch Transcription / OpenAI 推論の送信は対象外（Microsoft バックボーン経由）。`networkInjections` は **create-only**（作成時のみ設定可・後付け不可）。 |
 | Application Insights | **Azure Monitor Private Link Scope (AMPLS)** | ログ送信・クエリを Private Link 経由に制限 |
-| Azure OpenAI | **Private Endpoint**（`privatelink.openai.azure.com`） | チャット/埋め込みを閉域アクセス。クエリのベクトル化は UI 側で実施し Search→OpenAI 呼び出しを回避（3.8 参照） |
-| Azure AI Search | **Private Endpoint** | 文字起こしチャンクのベクトル/セマンティック検索。UI から MI で push 登録・検索 |
+| Azure OpenAI | **Private Endpoint**（`privatelink.openai.azure.com`） | UI の回答生成と Search の統合ベクトル化から閉域アクセスする |
+| Azure AI Search | **Private Endpoint + shared private link** | UI は PE 経由で検索する。Search は shared private link 経由で Storage / Azure OpenAI に接続する |
 | Azure Container Apps | **External Ingress（公開）+ VNet 統合（送信）** | UI は外部公開。バックエンドへの通信は VNet 統合経由 |
 | Event Grid | **Storage Queue 配信**（閉域: AzureServices バイパスで配信可能） |
 
@@ -322,6 +321,10 @@ ACA（Streamlit UI）のフロントエンド Ingress **のみ外部公開**。�
 | `snet-aca` | Container Apps Environment | `10.0.2.0/23` |
 | `snet-privateendpoints` | 各種 Private Endpoint 配置 | `10.0.4.0/24` |
 | `snet-agent` | Foundry Agent Service 送信の VNet 注入（`Microsoft.App/environments` 委任・/27 以上） | `10.0.5.0/24` |
+
+4 subnet は VNet リソースの `properties.subnets` にインライン定義し、VNet と subnet を1回の PUT で原子的に作成する。下流モジュールは `existing` child resource の ID を参照し、VNet 作成との競合を防ぐ。
+
+Azure AI Search は `AZURE_SEARCH_LOCATION` で主リージョンから分離でき、既定値は `eastus` とする。Search サービスが別リージョンでも、Private Endpoint は VNet の主リージョンに配置する。
 
 #### その他セキュリティ
 
@@ -368,8 +371,8 @@ ACA（Streamlit UI）のフロントエンド Ingress **のみ外部公開**。�
 | Microsoft Foundry Project | AI サービスのプロジェクト管理（accounts/projects 子リソース） | 親リソースの PE 経由 |
 | Azure OpenAI | RAG のチャット(回答生成)・埋め込み(ベクトル化) | Private Endpoint |
 | Azure AI Search | 文字起こしチャンクのベクトル/セマンティック検索（`documents` インデックス） | Private Endpoint |
-| Azure Container Registry (Premium) | Streamlit UI Docker イメージ管理 | Private Endpoint |
-| Azure Container Apps | Streamlit UI ホスティング | External Ingress + VNet 統合 |
+| Azure Container Registry (Premium) | FastAPI UI Docker イメージ管理 | Private Endpoint |
+| Azure Container Apps | FastAPI UI ホスティング | External Ingress + VNet 統合 |
 | Application Insights | ログ・監視 | Azure Monitor Private Link Scope |
 | Private DNS Zones | Private Endpoint の名前解決 | VNet リンク |
 

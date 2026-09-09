@@ -1,0 +1,122 @@
+<!DOCTYPE html>  
+<html lang="ja">  
+<head>  
+  <meta charset="UTF-8" />  
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />  
+  <title>カスタマーサポート支援エージェント</title>  
+  <link rel="stylesheet" href="/static/style.css" />  
+</head>  
+<body>  
+  <header class="app-header">  
+    <div class="app-title-area">  
+      <h1>カスタマーサポート支援エージェント</h1>  
+      <div class="header-status">  
+        <span id="apiStatus">API: 確認中...</span>  
+        <span id="sessionStatus">Session: -</span>  
+      </div>  
+    </div>  
+  
+    <div class="header-actions">  
+      <a href="/documents"><button class="secondary" type="button">文書RAG</button></a>  
+      <a href="/ocr"><button class="secondary" type="button">OCR</button></a>  
+      <button id="startConversationBtn">会話開始</button>  
+      <button id="pauseConversationBtn" class="secondary">一時停止</button>  
+      <button id="stopConversationBtn">会話終了</button>  
+      <button id="toggleTranscriptBtn" class="secondary">文字おこし</button>  
+    </div>  
+  </header>  
+  
+  <div class="app-shell">  
+    <!-- 左: 履歴 -->  
+    <aside id="historySidebar" class="left-sidebar">  
+      <div class="sidebar-section">  
+        <div class="sidebar-section-header history-header-row">  
+          <h2>履歴</h2>  
+          <button id="toggleHistoryBtn" class="secondary small-btn">折りたたむ</button>  
+        </div>  
+  
+        <div class="button-row">  
+          <button id="refreshHistoryBtn">履歴更新</button>  
+          <button id="backToCurrentBtn" class="secondary">現在の会話に戻る</button>  
+        </div>  
+  
+        <div id="historyBox" class="history-list"></div>  
+      </div>  
+    </aside>  
+  
+    <!-- 中央: チャット -->  
+    <main class="chat-main">  
+      <div class="chat-topbar">  
+        <div>  
+          <div class="chat-context-label">現在の対象</div>  
+          <div id="chatContextTitle" class="chat-context-title">現在の会話</div>  
+        </div>  
+  
+        <div class="chat-topbar-actions">  
+          <label for="promptSetSelect">プロンプト</label>  
+          <select id="promptSetSelect">  
+            {% for item in prompt_sets %}  
+            <option value="{{ item }}">{{ item }}</option>  
+            {% endfor %}  
+          </select>  
+        </div>  
+      </div>  
+  
+      <div id="analysisCardContainer" class="analysis-card-container hidden"></div>  
+  
+      <div id="chatMessages" class="chat-messages">  
+        <div class="chat-message assistant">  
+          <div class="chat-bubble">  
+            ユーザーとの会話について質問したり、「要約して」「回答候補を教えて」などと入力してください。  
+          </div>  
+        </div>  
+      </div>  
+  
+      <!-- quick actions は削除 -->  
+  
+      <div class="chat-input-area compact-chat-input">  
+        <textarea  
+          id="chatInput"  
+          rows="3"  
+          placeholder="例: ユーザーへの回答方針をまとめて"  
+        ></textarea>  
+        <!-- 送信ボタンは削除 -->  
+      </div>  
+    </main>  
+  
+    <!-- 右: 文字おこしサイドバー -->  
+    <aside id="transcriptSidebar" class="right-sidebar">  
+      <div class="transcript-sidebar-inner">  
+        <div class="transcript-header">  
+          <h2>文字おこし</h2>  
+          <button id="closeTranscriptBtn" class="secondary">閉じる</button>  
+        </div>  
+  
+        <div class="status-box" id="micStatus">Mic: idle</div>  
+  
+        <div class="button-row">  
+          <button id="refreshTranscriptBtn">文字おこし更新</button>  
+          <button id="commitBtn" class="secondary">ここまで確定</button>  
+        </div>  
+  
+        <label for="transcriptBox">現在の文字おこし</label>  
+        <textarea id="transcriptBox" rows="18" readonly></textarea>  
+  
+        <label for="debugTextBox">デバッグ用追加入力</label>  
+        <textarea  
+          id="debugTextBox"  
+          rows="5"  
+          placeholder="Realtimeが未反映のときはここからテスト"  
+        ></textarea>  
+  
+        <div class="button-row">  
+          <button id="addDebugBtn">デバッグ文字追加</button>  
+          <button id="clearDebugInputBtn" class="secondary">入力欄クリア</button>  
+        </div>  
+      </div>  
+    </aside>  
+  </div>  
+  
+  <script src="/static/app.js"></script>  
+</body>  
+</html>  

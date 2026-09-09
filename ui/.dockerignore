@@ -1,0 +1,9 @@
+.git
+.gitignore
+.azure
+.env
+.venv
+__pycache__/
+*.pyc
+*.md
+tests/

@@ -81,6 +81,17 @@ resource containerOutput 'Microsoft.Storage/storageAccounts/blobServices/contain
   properties: { publicAccess: 'None' }
 }
 
+// OCR (UI) 用: アップロード元と OCR 結果(markdown)の格納先
+resource containerUpload 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  name: '${dataStorage.name}/default/upload'
+  properties: { publicAccess: 'None' }
+}
+
+resource containerChunk 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  name: '${dataStorage.name}/default/chunk'
+  properties: { publicAccess: 'None' }
+}
+
 // Event Grid 用 Storage Queue（ARM 経由で作成 — 閉域対応）
 resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-05-01' = {
   parent: dataStorage

@@ -1,0 +1,145 @@
+<!DOCTYPE html>  
+<html lang="ja">  
+<head>  
+  <meta charset="UTF-8" />  
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />  
+  <title>Blob文書ダッシュボード</title>  
+  <link rel="stylesheet" href="/static/style.css" />  
+</head>  
+<body>  
+  <header class="app-header">  
+    <div class="app-title-area">  
+      <h1>Blob文書ダッシュボード</h1>  
+      <div class="header-status">  
+        <span id="documentsStatus">処理済み transcript 一覧 + 文書RAG</span>  
+      </div>  
+    </div>  
+  
+    <div class="header-actions">  
+      <a href="/"><button class="secondary" type="button">会話支援へ</button></a>  
+      <a href="/ocr"><button class="secondary" type="button">OCR</button></a>  
+    </div>  
+  </header>  
+  
+  <div class="app-shell" style="grid-template-columns: 420px minmax(0, 1fr);">  
+    <aside class="left-sidebar" style="width:420px; min-width:420px;">  
+      <div class="sidebar-section">  
+        <div class="sidebar-section-header">  
+          <h2>文書一覧</h2>  
+        </div>  
+  
+        <label for="dateFrom">開始日</label>  
+        <input id="dateFrom" type="date" />  
+  
+        <label for="dateTo">終了日</label>  
+        <input id="dateTo" type="date" />  
+  
+        <label for="keywordInput">キーワード</label>  
+        <input id="keywordInput" type="text" placeholder="ファイル名で絞り込み" />  
+  
+        <div class="button-row" style="margin-top: 12px;">  
+          <button id="searchDocumentsBtn">検索</button>  
+          <button id="refreshDocumentsBtn" class="secondary">更新</button>  
+        </div>  
+  
+        <div id="documentList" class="history-list" style="margin-top: 14px;"></div>  
+      </div>  
+    </aside>  
+  
+    <main class="chat-main">  
+      <div class="chat-topbar">  
+        <div>  
+          <div class="chat-context-label">選択中の文書</div>  
+          <div id="documentTitle" class="chat-context-title">未選択</div>  
+        </div>  
+      </div>  
+  
+      <div class="chat-messages" style="padding-bottom: 8px;">  
+        <div id="detailEmpty" class="empty-box">  
+          左の一覧から文書を選択してください。  
+        </div>  
+  
+        <div id="detailPanel" style="display:none;">  
+          <div class="button-row" style="margin-bottom: 12px;">  
+            <button id="downloadJsonBtn" class="secondary" disabled>JSON ダウンロード</button>  
+            <button id="downloadTextBtn" class="secondary" disabled>テキスト ダウンロード</button>  
+          </div>  
+  
+          <div class="button-row" style="margin-bottom: 12px;">  
+            <div class="small" id="documentMeta">処理日時: - / 長さ: - / 言語: -</div>  
+          </div>  
+  
+          <div id="mediaWrap" style="margin-bottom: 14px;"></div>  
+  
+          <label for="transcriptPreview">トランスクリプト</label>  
+          <textarea id="transcriptPreview" rows="14" readonly></textarea>  
+  
+          <div style="margin-top: 16px;">  
+            <h3 style="margin-bottom: 8px;">AIに質問</h3>  
+  
+            <textarea  
+              id="ragQuestion"  
+              rows="4"  
+              placeholder="例: この通話で決まったアクションアイテムは？"  
+            ></textarea>  
+  
+            <div class="button-row" style="margin-top: 12px;">  
+              <select id="searchModeSelect" style="width: 200px;">  
+                <option value="semantic_hybrid" selected>semantic_hybrid</option>  
+                <option value="hybrid">hybrid</option>  
+                <option value="vector">vector</option>  
+                <option value="keyword">keyword</option>  
+              </select>  
+  
+              <select id="topKSelect" style="width: 140px;">  
+                <option value="3">3件</option>  
+                <option value="5" selected>5件</option>  
+                <option value="7">7件</option>  
+                <option value="10">10件</option>  
+              </select>  
+  
+              <label style="display:flex; align-items:center; gap:8px; margin:0;">  
+                <input id="useRewriteCheckbox" type="checkbox" checked style="width:auto;" />  
+                検索語をAIで最適化  
+              </label>  
+            </div>  
+  
+            <div class="button-row" style="margin-top: 12px;">  
+              <button id="runRagBtn">回答生成</button>  
+            </div>  
+  
+            <div id="ragResultWrap" style="margin-top: 16px; display:none;">  
+              <div class="assistant-details">  
+                <strong>現在通話の要約</strong>  
+                <div id="ragSummary" style="margin-top:8px; white-space:pre-wrap;"></div>  
+              </div>  
+  
+              <div class="assistant-details" id="intentBox" style="margin-top:10px; display:none;">  
+                <strong>意図サマリ</strong>  
+                <div id="ragIntent" style="margin-top:8px; white-space:pre-wrap;"></div>  
+              </div>  
+  
+              <div class="assistant-details" style="margin-top:10px;">  
+                <strong>検索クエリ</strong>  
+                <div id="ragQuery" style="margin-top:8px; white-space:pre-wrap;"></div>  
+              </div>  
+  
+              <div class="assistant-details" style="margin-top:10px;">  
+                <strong>回答</strong>  
+                <div id="ragAnswer" style="margin-top:8px; white-space:pre-wrap;"></div>  
+              </div>  
+  
+              <details class="assistant-details" style="margin-top:10px;">  
+                <summary>根拠に使った検索結果</summary>  
+                <div id="ragContexts" style="margin-top:10px;"></div>  
+              </details>  
+            </div>  
+          </div>  
+        </div>  
+      </div>  
+    </main>  
+  </div>  
+  
+  <script src="/static/documents.js"></script>  
+</body>  
+</html>  

@@ -23,6 +23,15 @@ services:
       remoteBuild: true
 
 hooks:
+  # provision 完了後: Azure AI Search の index/indexer/skillset を作成し統合ベクトル化で取り込む
+  postprovision:
+    posix:
+      shell: sh
+      run: uv run hooks/setup_search.py
+    windows:
+      shell: pwsh
+      run: uv run hooks/setup_search.py
+
   # 閉域リソースへのデプロイのため一時的に Public Access を開放
   predeploy:
     posix:

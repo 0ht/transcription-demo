@@ -33,6 +33,24 @@ param embeddingDeploymentName string = 'text-embedding-3-large'
 @description('Embedding model name')
 param embeddingModelName string = 'text-embedding-3-large'
 
+@description('Realtime model deployment name')
+param realtimeDeploymentName string = 'gpt-realtime'
+
+@description('Realtime model name')
+param realtimeModelName string = 'gpt-realtime'
+
+@description('Realtime model version')
+param realtimeModelVersion string = '2025-08-28'
+
+@description('Realtime 入力文字起こし用のモデルデプロイ名（UI の WHISPER_MODEL と一致）')
+param transcribeDeploymentName string = 'whisper'
+
+@description('文字起こしモデル名')
+param transcribeModelName string = 'whisper'
+
+@description('文字起こしモデルバージョン')
+param transcribeModelVersion string = '001'
+
 @description('AI Services アカウント名（トークン付与済み最終名）')
 param aiServicesName string
 
@@ -119,6 +137,50 @@ resource embeddingDeployment 'Microsoft.CognitiveServices/accounts/deployments@2
   ]
 }
 
+// Realtime モデルデプロイ（音声リアルタイム文字起こし用）
+// アカウントへの並列 PUT を避けるため embedding の後に直列化する。
+resource realtimeDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-04-01-preview' = {
+  parent: aiServices
+  name: realtimeDeploymentName
+  sku: {
+    name: 'GlobalStandard'
+    capacity: 1
+  }
+  properties: {
+    model: {
+      format: 'OpenAI'
+      name: realtimeModelName
+      version: realtimeModelVersion
+    }
+    versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
+  }
+  dependsOn: [
+    embeddingDeployment
+  ]
+}
+
+// Whisper モデルデプロイ（Realtime セッションの入力文字起こし用）
+// アカウントへの並列 PUT を避けるため realtime の後に直列化する。
+resource transcribeDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-04-01-preview' = {
+  parent: aiServices
+  name: transcribeDeploymentName
+  sku: {
+    name: 'Standard'
+    capacity: 1
+  }
+  properties: {
+    model: {
+      format: 'OpenAI'
+      name: transcribeModelName
+      version: transcribeModelVersion
+    }
+    versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
+  }
+  dependsOn: [
+    realtimeDeployment
+  ]
+}
+
 // AI Services の Private Endpoint
 // 注意: モデルデプロイ完了後に作成する。アカウントへの PUT（モデルデプロイ含む）は
 // 非同期で一時的に "Accepted" 状態になり、その最中に PE がアカウントを参照すると
@@ -142,6 +204,8 @@ resource peAiServices 'Microsoft.Network/privateEndpoints@2024-01-01' = {
   dependsOn: [
     chatDeployment
     embeddingDeployment
+    realtimeDeployment
+    transcribeDeployment
   ]
 }
 
@@ -181,3 +245,5 @@ output openAIEndpoint string = 'https://${aiServices.name}.openai.azure.com/'
 output openAIId string = aiServices.id
 output chatDeployment string = chatDeployment.name
 output embeddingDeployment string = embeddingDeployment.name
+output realtimeDeployment string = realtimeDeployment.name
+output transcribeDeployment string = transcribeDeployment.name

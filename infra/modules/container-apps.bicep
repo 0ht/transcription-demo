@@ -30,10 +30,17 @@ param azureOpenAIEndpoint string
 param azureOpenAIId string
 @description('Azure OpenAI のチャットモデルデプロイ名。')
 param azureOpenAIChatDeployment string
-@description('Azure OpenAI の埋め込みモデルデプロイ名。')
-param azureOpenAIEmbeddingDeployment string
+@description('Azure OpenAI の Realtime モデルデプロイ名。')
+param azureOpenAIRealtimeDeployment string
+@description('Realtime 入力文字起こし用（Whisper）モデルデプロイ名。')
+param azureOpenAITranscribeDeployment string
 @description('Azure OpenAI の API バージョン。')
 param azureOpenAIApiVersion string
+
+@description('AI Services (Document Intelligence 兼用) のエンドポイント。')
+param aiServicesEndpoint string
+@description('AI Services (Document Intelligence 兼用) のリソース ID。')
+param aiServicesId string
 
 @description('Azure AI Search のエンドポイント。')
 param azureSearchEndpoint string
@@ -111,7 +118,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
     configuration: {
       ingress: {
         external: true
-        targetPort: 8501
+        targetPort: 8000
         transport: 'http'
         traffic: [
           {
@@ -149,7 +156,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
       }
       containers: [
         {
-          name: 'streamlit-ui'
+          name: 'ui'
           // 既存があれば前回 image、なければ最軽量の公開プレースホルダー（auth 不要・サイズ小）
           image: !empty(fetchLatestImage.outputs.containers) ? fetchLatestImage.outputs.containers[0].image : 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
           resources: {
@@ -157,21 +164,28 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             memory: '1Gi'
           }
           env: [
-            { name: 'DATA_STORAGE_ACCOUNT_NAME', value: dataStorageAccountName }
+            { name: 'STORAGE_ACCOUNT_NAME', value: dataStorageAccountName }
             { name: 'CONTAINER_INPUT', value: 'input' }
             { name: 'CONTAINER_OUTPUT', value: 'output' }
             { name: 'CONTAINER_PROCESSED', value: 'processed' }
             { name: 'LOG_ANALYTICS_WORKSPACE_ID', value: logAnalyticsWorkspaceId }
 
-            { name: 'AZURE_OPENAI_ENDPOINT', value: azureOpenAIEndpoint }
-            { name: 'AZURE_OPENAI_CHAT_DEPLOYMENT', value: azureOpenAIChatDeployment }
-            { name: 'AZURE_OPENAI_EMBEDDING_DEPLOYMENT', value: azureOpenAIEmbeddingDeployment }
-            { name: 'AZURE_OPENAI_API_VERSION', value: azureOpenAIApiVersion }
+            { name: 'AOAI_ENDPOINT', value: azureOpenAIEndpoint }
+            { name: 'AOAI_API_VERSION', value: azureOpenAIApiVersion }
+            { name: 'AOAI_MODEL_NAME', value: azureOpenAIChatDeployment }
+            { name: 'REALTIME_MODEL', value: azureOpenAIRealtimeDeployment }
+            { name: 'WHISPER_MODEL', value: azureOpenAITranscribeDeployment }
 
-            { name: 'AZURE_SEARCH_ENDPOINT', value: azureSearchEndpoint }
-            { name: 'AZURE_SEARCH_INDEX_NAME', value: azureSearchIndexName }
-            { name: 'AZURE_SEARCH_SEMANTIC_CONFIG', value: azureSearchSemanticConfig }
+            { name: 'SEARCH_ENDPOINT', value: azureSearchEndpoint }
+            { name: 'SEARCH_INDEX', value: azureSearchIndexName }
+            { name: 'SEMANTIC_CONFIG_NAME', value: azureSearchSemanticConfig }
             { name: 'READ_FIELDS', value: readFields }
+
+            { name: 'ADI_ENDPOINT', value: aiServicesEndpoint }
+            { name: 'ADI_MODEL', value: 'prebuilt-layout' }
+
+            // 実フォルダ名は prompt（単数）のため既定値 'prompts' を上書き
+            { name: 'PROMPT_LOCAL_DIR', value: 'prompt' }
           ]
         }
       ]
@@ -245,6 +259,21 @@ resource acaOpenAIUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: openAIResource
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
+    principalId: containerApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// RBAC: Container App → Document Intelligence (Cognitive Services User)
+resource aiServicesResource 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = {
+  name: last(split(aiServicesId, '/'))
+}
+
+resource acaCognitiveServicesUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(aiServicesId, containerApp.id, 'Cognitive Services User')
+  scope: aiServicesResource
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'a97b65f3-24c7-4388-baec-2e87135dc908')
     principalId: containerApp.identity.principalId
     principalType: 'ServicePrincipal'
   }

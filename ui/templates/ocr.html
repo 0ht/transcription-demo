@@ -1,0 +1,74 @@
+<!DOCTYPE html>  
+<html lang="ja">  
+<head>  
+  <meta charset="UTF-8" />  
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />  
+  <title>OCR管理</title>  
+  <link rel="stylesheet" href="/static/style.css" />  
+</head>  
+<body>  
+  <header class="app-header">  
+    <div class="app-title-area">  
+      <h1>OCR管理</h1>  
+      <div class="header-status">  
+        <span>Azure Document Intelligence / Blob Storage</span>  
+      </div>  
+    </div>  
+    <div class="header-actions">  
+      <a href="/"><button class="secondary">会話支援へ</button></a>  
+    </div>  
+  </header>  
+  
+  <div class="app-shell" style="grid-template-columns: 360px minmax(0, 1fr);">  
+    <aside class="left-sidebar" style="width:360px; min-width:360px;">  
+      <div class="sidebar-section">  
+        <div class="sidebar-section-header">  
+          <h2>OCR操作</h2>  
+        </div>  
+  
+        <label for="ocrFileInput">ファイル選択</label>  
+        <input id="ocrFileInput" type="file" multiple />  
+  
+        <div class="button-row" style="margin-top:12px;">  
+          <button id="uploadOcrBtn">アップロード</button>  
+          <button id="refreshUploadsBtn" class="secondary">一覧更新</button>  
+        </div>  
+  
+        <label>アップロード済み</label>  
+        <div id="uploadList" class="history-list"></div>  
+      </div>  
+    </aside>  
+  
+    <main class="chat-main">  
+      <div class="chat-topbar">  
+        <div>  
+          <div class="chat-context-label">OCR結果</div>  
+          <div class="chat-context-title" id="ocrSelectedTitle">未選択</div>  
+        </div>  
+        <div class="chat-topbar-actions">  
+          <button id="refreshResultsBtn" class="secondary">結果更新</button>  
+        </div>  
+      </div>  
+  
+      <div class="chat-messages" style="padding-bottom:0;">  
+        <div>  
+          <label>OCR結果一覧</label>  
+          <div id="resultList" class="history-list" style="height:220px;"></div>  
+        </div>  
+  
+        <div style="margin-top:16px;">  
+          <label for="ocrResultPreview">プレビュー</label>  
+          <textarea id="ocrResultPreview" rows="20" readonly></textarea>  
+        </div>  
+  
+        <div class="button-row" style="margin-top:12px;">  
+          <button id="downloadResultBtn" class="secondary" disabled>ダウンロード</button>  
+          <button id="deleteResultBtn" class="danger" disabled>結果削除</button>  
+        </div>  
+      </div>  
+    </main>  
+  </div>  
+  
+  <script src="/static/ocr.js"></script>  
+</body>  
+</html>  

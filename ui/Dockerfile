@@ -17,14 +17,9 @@ COPY --chown=appuser:appuser . .
 # 以降は非 root で実行
 USER appuser
 
-EXPOSE 8501
+EXPOSE 8000
 
-HEALTHCHECK CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')" || exit 1
+# FastAPI にはヘルス専用エンドポイントが無いためトップページへの疎通で代替
+HEALTHCHECK CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/')" || exit 1
 
-CMD ["streamlit", "run", "app.py", \
-     "--server.port=8501", \
-     "--server.address=0.0.0.0", \
-     "--server.headless=true", \
-     "--server.maxUploadSize=1024", \
-     "--server.maxMessageSize=1100", \
-     "--browser.gatherUsageStats=false"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -29,83 +29,88 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
     addressSpace: {
       addressPrefixes: ['10.0.0.0/16']
     }
+    subnets: [
+      {
+        name: subnetFunctionsName
+        properties: {
+          addressPrefix: '10.0.1.0/24'
+          defaultOutboundAccess: false
+          delegations: [
+            {
+              name: 'functions-delegation'
+              properties: {
+                serviceName: 'Microsoft.App/environments'
+              }
+            }
+          ]
+        }
+      }
+      {
+        name: subnetAcaName
+        properties: {
+          addressPrefix: '10.0.2.0/23'
+          // Container Apps が初回起動の placeholder image (mcr.microsoft.com) や
+          // ACR からのイメージ pull を行うため outbound 許可。
+          // 本番では NAT Gateway + Egress リストで送信先を絞ることを推奨。
+          defaultOutboundAccess: true
+          delegations: [
+            {
+              name: 'aca-delegation'
+              properties: {
+                serviceName: 'Microsoft.App/environments'
+              }
+            }
+          ]
+        }
+      }
+      {
+        name: subnetPrivateEndpointsName
+        properties: {
+          addressPrefix: '10.0.4.0/24'
+          defaultOutboundAccess: false
+          privateEndpointNetworkPolicies: 'Disabled'
+        }
+      }
+      // Foundry Agent Service の送信トラフィックを VNet に注入する専用サブネット。
+      // 要件: Microsoft.App/environments へ委任し、/27 以上のサイズであること。
+      // Agent 専用のため他リソース（Functions / ACA）とは共有しない。
+      {
+        name: subnetAgentName
+        properties: {
+          addressPrefix: '10.0.5.0/24'
+          defaultOutboundAccess: false
+          delegations: [
+            {
+              name: 'agent-delegation'
+              properties: {
+                serviceName: 'Microsoft.App/environments'
+              }
+            }
+          ]
+        }
+      }
+    ]
   }
 }
 
-resource subnetFunctions 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
+resource subnetFunctions 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' existing = {
   parent: vnet
   name: subnetFunctionsName
-  properties: {
-    addressPrefix: '10.0.1.0/24'
-    defaultOutboundAccess: false
-    delegations: [
-      {
-        name: 'functions-delegation'
-        properties: {
-          serviceName: 'Microsoft.App/environments'
-        }
-      }
-    ]
-  }
 }
 
-resource subnetAca 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
+resource subnetAca 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' existing = {
   parent: vnet
   name: subnetAcaName
-  dependsOn: [
-    subnetFunctions
-  ]
-  properties: {
-    addressPrefix: '10.0.2.0/23'
-    // Container Apps が初回起動の placeholder image (mcr.microsoft.com) や
-    // ACR からのイメージ pull を行うため outbound 許可。
-    // 本番では NAT Gateway + Egress リストで送信先を絞ることを推奨。
-    defaultOutboundAccess: true
-    delegations: [
-      {
-        name: 'aca-delegation'
-        properties: {
-          serviceName: 'Microsoft.App/environments'
-        }
-      }
-    ]
-  }
 }
 
-resource subnetPrivateEndpoints 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
+resource subnetPrivateEndpoints 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' existing = {
   parent: vnet
   name: subnetPrivateEndpointsName
-  dependsOn: [
-    subnetAca
-  ]
-  properties: {
-    addressPrefix: '10.0.4.0/24'
-    defaultOutboundAccess: false
-    privateEndpointNetworkPolicies: 'Disabled'
-  }
 }
 
-// Foundry Agent Service の送信トラフィックを VNet に注入する専用サブネット。
-// 要件: Microsoft.App/environments へ委任し、/27 以上のサイズであること。
-// Agent 専用のため他リソース（Functions / ACA）とは共有しない。
-resource subnetAgent 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' = {
+resource subnetAgent 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' existing = {
   parent: vnet
   name: subnetAgentName
-  dependsOn: [
-    subnetPrivateEndpoints
-  ]
-  properties: {
-    addressPrefix: '10.0.5.0/24'
-    defaultOutboundAccess: false
-    delegations: [
-      {
-        name: 'agent-delegation'
-        properties: {
-          serviceName: 'Microsoft.App/environments'
-        }
-      }
-    ]
-  }
 }
 
 // Private DNS Zones

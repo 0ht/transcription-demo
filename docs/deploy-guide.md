@@ -39,6 +39,10 @@ transcription-demo/       ← プロジェクトルート（ここで全コマ�
 │   ├── function_app.py
 │   ├── host.json
 │   └── requirements.txt
+├── hooks/
+│   ├── setup_search.py          ← Search の index / datasource / skillset / indexer 作成
+│   ├── enable_public_access.py  ← デプロイ前の一時開放
+│   └── disable_public_access.py ← デプロイ後の再閉鎖
 ├── infra/                ← Bicep IaC
 │   ├── main.bicep        ← エントリポイント
 │   ├── main.parameters.json
@@ -47,7 +51,6 @@ transcription-demo/       ← プロジェクトルート（ここで全コマ�
 │       ├── storage.bicep
 │       ├── acr.bicep
 │       ├── ai.bicep
-│       ├── openai.bicep
 │       ├── search.bicep
 │       ├── monitoring.bicep
 │       ├── functions.bicep
@@ -58,20 +61,17 @@ transcription-demo/       ← プロジェクトルート（ここで全コマ�
 ├── scripts/              ← 運用補助スクリプト
 │   └── cleanup-orphan-ra.ps1            ← 孤立ロール割当のクリーンアップ
 ├── tests/                ← 単体テスト（pytest, Azure 接続不要）
-│   ├── conftest.py       ← import 前セットアップ・共通フィクスチャ
-│   ├── test_functions.py ← Functions の純粋ロジック
-│   └── test_ui.py        ← UI の純粋ロジック
-└── ui/                   ← Streamlit UI
-    ├── app.py            ← エントリポイント（タブ・チャート・ボタン定義）
-    ├── blob_service.py   ← Blob 一覧/取得/削除
-    ├── config.py         ← 環境変数・設定読み込み
-    ├── index_service.py  ← RAG: インデックス作成 + push 登録
-    ├── search_service.py ← RAG: ベクトル/セマンティック検索
-    ├── llm.py            ← RAG: 埋め込み・回答生成（Azure OpenAI）
+│   ├── test_functions.py
+│   ├── test_network_access.py
+│   ├── test_predown.py
+│   └── test_setup_search.py
+└── ui/                   ← FastAPI UI
+  ├── main.py           ← FastAPI エントリポイント
+  ├── modules/          ← Storage / Search / RAG / OCR / リアルタイム処理
+  ├── templates/        ← HTML テンプレート
+  ├── static/           ← JavaScript / CSS
     ├── Dockerfile
-    ├── requirements.txt
-    └── components/
-        └── ffmpeg_extractor/            ← 動画→MP3 ブラウザ内変換コンポーネント
+  └── requirements.txt
 ```
 
 ## アーキテクチャ概要
@@ -99,8 +99,8 @@ flowchart TB
         Speech["Speech Batch v3.2 / contentUrls=plain blob URL / channels=[0] + diarization"]
     end
 
-    subgraph UI["Container Apps / Streamlit UI / MI"]
-        Streamlit["input/processed/output 一覧 / blob-events メトリクス / App Insights 例外表示"]
+    subgraph UI["Container Apps / FastAPI UI / MI"]
+      WebUI["リアルタイム文字起こし / 履歴 / 文書閲覧 / RAG / OCR"]
     end
 
     User -- アップロード --> Input
@@ -114,10 +114,10 @@ flowchart TB
     Speech --> Output
     TextExtract --> Output
     QT -- 元ファイル移動 --> Processed
-    Output --> Streamlit
-    Processed --> Streamlit
-    Queue -. キュー状態参照 .-> Streamlit
-    User -- HTTPS / allowedIpRanges --> Streamlit
+    Output --> WebUI
+    Processed --> WebUI
+    Queue -. キュー状態参照 .-> WebUI
+    User -- HTTPS / allowedIpRanges --> WebUI
 ```
 
 ### データストレージへのアクセスパス（閉域構成）
@@ -139,32 +139,31 @@ flowchart TB
 
 ### RAG（AIに質問）機能のアクセスパス
 
-UI（Streamlit）には、表示中の文字起こしを対象に自然言語で質問できる RAG 機能があります。Azure OpenAI・Azure AI Search ともに **`publicNetworkAccess=Disabled` + Private Endpoint** の閉域構成です。
+UI には、表示中の文字起こしを対象に自然言語で質問できる RAG 機能があります。Azure OpenAI・Azure AI Search ともに **`publicNetworkAccess=Disabled` + Private Endpoint** の閉域構成です。
 
 | アクセス元 | アクセス手段 | 認証 |
 |---|---|---|
 | Container Apps (UI) → Azure AI Search | Private Endpoint（VNet 統合 → Private DNS Zone） | MI + Search Service / Index Data Contributor |
 | Container Apps (UI) → Azure OpenAI（埋め込み・回答生成） | Private Endpoint（`privatelink.openai.azure.com`） | MI + Cognitive Services OpenAI User |
+| Azure AI Search → Storage / Azure OpenAI | Shared private link | Search の system-assigned MI + RBAC |
 
-> ⚠️ **統合ベクトル化（VectorizableTextQuery）は使わない**
-> OpenAI が `publicNetworkAccess=Disabled` のため、検索時に Azure AI Search 側が OpenAI を呼ぶ「統合ベクトル化」は 403（Forbidden）になります（Search→OpenAI の shared private link を別途張らない限り不可）。
-> 本システムは **クエリのベクトル化を UI 側（MI）で実施**し（`embed_texts`）、`VectorizedQuery` として検索に渡すことで Search→OpenAI 呼び出しを回避しています。インデックス登録も同様に UI 側で埋め込みを計算する **push 型** です。詳細は [requirement.md](requirement.md) 3.8 を参照。
+`postprovision` フックは Search から Storage / Azure OpenAI への shared private link を承認し、`output` コンテナを読む indexer と統合ベクトル化 skillset を作成します。UI は `VectorizableTextQuery` を送信し、Search の vectorizer が Azure OpenAI を shared private link 経由で呼び出します。詳細は [requirement.md](requirement.md) 3.8 を参照してください。
 
 ## 作成されるリソース
 
 | リソース | 命名規則 | ポイント |
 |---------|----------|------|
 | Resource Group | `rg-transcription-{env}` | |
-| VNet + 4 Subnets | `vnet-transcription-{env}` | snet-functions / snet-aca / snet-pe / snet-agent（Foundry Agent Service 送信の VNet 注入用・`Microsoft.App/environments` 委任） |
+| VNet + 4 Subnets | `vnet-transcription-{env}` | snet-functions / snet-aca / snet-privateendpoints / snet-agent。4 subnet は VNet の `subnets` プロパティで原子的に作成 |
 | Storage (データ) | `sttranscriptiondata{env}` | **`publicNetworkAccess=Enabled`** + `defaultAction=Deny` + Trusted Services bypass + `allowSharedKeyAccess=false`（パブリック EP は公開するが ACL で全拒否、Speech のみ `resourceAccessRules` で許可。`Disabled` だと Speech Batch Trusted Access が機能しないため） |
 | Storage (Functions ランタイム) | `sttranscriptionfunc{env}` | **`publicNetworkAccess=Disabled`** / Flex Consumption 要件 (Blob+Table+Queue PE) / azd デプロイ時のみ hooks で一時開放 |
 | Azure Functions (Flex Consumption) | `func-transcription-{env}-{hash}` | `publicNetworkAccess=Disabled` / VNet 統合 / MI |
 | AI Services (Foundry 親リソース) | `ais-transcription-{env}` | `kind=AIServices` / `disableLocalAuth=true` / MI / **`networkInjections`（`scenario=agent`）で Agent Service の送信を `snet-agent` に注入**（下記注意参照） |
 | Foundry Project | `proj-transcription-{env}` | Hub 不要スタンドアロン |
 | Azure OpenAI | `oai-transcription-{env}` | RAG 用。`publicNetworkAccess=Disabled` + PE / `disableLocalAuth=true` / `gpt-4.1-mini` + `text-embedding-3-large` をデプロイ / MI |
-| Azure AI Search | `srch-transcription-{env}` | RAG 用。`publicNetworkAccess=disabled` + PE / MI 認証 / `documents` インデックス（UI から push 登録） |
+| Azure AI Search | `srch-transcription-{env}-{hash}` | RAG 用。既定リージョンは `eastus`。`publicNetworkAccess=Disabled` + 主リージョン側 PE / MI 認証 / indexer による統合ベクトル化 |
 | Container Registry (Premium) | `acrtranscription{env}` | Premium SKU で PE サポート |
-| Container App (Streamlit UI) | `ca-transcription-ui-{env}` | MI / `allowedIpRanges` で Ingress 制限可（認証は未実装、今後追加予定） |
+| Container App (FastAPI UI) | `ca-transcription-ui-{env}` | MI / `allowedIpRanges` で Ingress 制限可（認証は未実装、今後追加予定） |
 | Event Grid System Topic | `evgt-blob-transcription-{env}` | Storage Queue (`blob-events`) に配信 |
 | Log Analytics / App Insights | `log-` / `appi-transcription-{env}` | AMPLS 経由。**ingestion=PrivateOnly**（テレメトリ送信は Private Endpoint 経由のみ） / **query=Open**（PoC のため Azure Portal の Logs ブレード ・ ローカル PC から KQL 可能、本番時は PrivateOnly へ切り替え） |
 | Private Endpoints + DNS Zones | 各リソースに対応 | blob/queue/table/cognitive/sites/azurecr/monitor |
@@ -195,7 +194,7 @@ UI（Streamlit）には、表示中の文字起こしを対象に自然言語で
 | **Azure OpenAI** | 生成 AI / 埋め込み API | RAG 機能で利用。`gpt-4.1-mini` で回答生成、`text-embedding-3-large` でチャンク/クエリのベクトル化。 |
 | **Azure AI Search** | 全文 + ベクトル検索エンジン | 文字起こしをチャンク化して索引し、ハイブリッド/セマンティック検索で関連箇所を取得（RAG の検索基盤）。 |
 | **Azure Container Registry (ACR)** | コンテナイメージのレジストリ | UI 用 Docker イメージを格納。Premium SKU は Private Endpoint に対応。 |
-| **Azure Container Apps (ACA)** | フルマネージド コンテナ実行基盤 | Streamlit UI をコンテナとしてホスト。スケール・HTTPS・MI を自動で面倒みてくれる。 |
+| **Azure Container Apps (ACA)** | フルマネージド コンテナ実行基盤 | FastAPI UI をコンテナとしてホスト。スケール・HTTPS・MI を管理する。 |
 | **Azure Virtual Network (VNet) / Subnet** | 仮想ネットワーク | Functions / ACA / Private Endpoint をそれぞれ別サブネットに収容し、閉域通信を構成。 |
 | **Private Endpoint (PE)** | プライベート IP 経由の接続点 | Storage / ACR / AI Services などへ「インターネットを介さず」接続するための NIC。Private DNS Zone と組み合わせて使う。 |
 | **Application Insights / Log Analytics** | 監視・ログ基盤 | Functions 実行ログ、例外、トレースを蓄積。UI からも KQL でクエリして表示する。 |
@@ -355,7 +354,12 @@ Write-Host "Current Directory: $(Get-Location)"
 
 # azd 環境初期化（初回のみ。サブスクリプションとリージョンを対話的に選択）
 azd init -e dev
+
+# 任意: Search の配置先を変更する（既定: eastus）
+azd env set AZURE_SEARCH_LOCATION eastus
 ```
+
+`AZURE_LOCATION` は VNet、Functions、Container Apps などの主リージョンを指定します。`AZURE_SEARCH_LOCATION` は Search サービスだけを別リージョンへ配置します。Search の Private Endpoint は VNet と同じ主リージョンに配置できます。
 
 > **対話プロンプトで「Use code in the current directory」を選択してください。** 既に `azure.yaml` が存在するため、既存構成が認識されます。
 
@@ -392,12 +396,15 @@ azd up
 <details>
 <summary>📖 補足 1: <code>azd up</code> が裏側で何をしているか</summary>
 
-`azd up` は以下 4 ステップを自動で順に実行する複合コマンドです：
+`azd up` は以下 5 ステップを自動で順に実行する複合コマンドです：
 
 1. **provision** — Bicep テンプレート（`infra/`）で全 Azure リソースを作成
-2. **predeploy** （フック）— Functions / ACR の Public Access を一時開放（閉域構成のためデプロイ時のみ必要）
-3. **deploy** — Functions コードデプロイ + UI イメージを ACR リモートビルド（Docker Desktop 不要）
-4. **postdeploy** （フック）— Public Access を再閉鎖
+2. **postprovision** （フック）— Search の shared private link を承認し、index / datasource / skillset / indexer を作成して初回実行
+3. **predeploy** （フック）— Functions / ACR の Public Access を一時開放（閉域構成のためデプロイ時のみ必要）
+4. **deploy** — Functions コードデプロイ + UI イメージを ACR リモートビルド（Docker Desktop 不要）
+5. **postdeploy** （フック）— Public Access を再閉鎖
+
+`postprovision` はデータプレーン設定の間だけ Search の Public Access を一時的に有効化し、成功・失敗にかかわらず最後に無効化します。Search のネットワーク設定反映に時間がかかる場合、フックが数十分待機することがあるため途中で停止しないでください。
 
 > **ACR リモートビルドとは**: Docker Desktop をローカルにインストールしなくても、Dockerfile と UI コードを ACR にアップロードすれば ACR 側でイメージをビルドしてくれる仕組み（`az acr build` 相当）。閉域 ACR でも `predeploy` フックが一時的に Public Access を開けるので利用可能です。
 
@@ -422,6 +429,17 @@ azd deploy functions
 azd deploy ui
 ```
 
+個別デプロイ時に `AZURE_SUBSCRIPTION_ID が設定されていません` と表示された場合は、azd 環境値が hook のプロセス環境へ渡っていません。同じ PowerShell セッションへ値を読み込んでから再実行します。値にはシークレットが含まれるため、コンソールへ出力しないでください。
+
+```powershell
+azd env get-values | ForEach-Object {
+  if ($_ -match '^([A-Z0-9_]+)="(.*)"$') {
+    Set-Item -Path "Env:$($Matches[1])" -Value $Matches[2]
+  }
+}
+azd deploy ui --no-prompt
+```
+
 </details>
 
 <details>
@@ -434,7 +452,7 @@ azd deploy ui
 - **初回 provision** (`uiExists=false`): `registries: []` + 公開プレースホルダー (`mcr.microsoft.com/azuredocs/containerapps-helloworld`) のみで作成 → ACR 認証を介さずに起動
 - **`azd deploy ui` 実行後** (`uiExists=true` を azd が自動セット): `fetch-container-image.bicep` が前回デプロイイメージを取得し、ACR registries 経路に切り替え
 
-そのため `azd up` の途中で UI を開いても helloworld 画面が出るのが正常で、`azd deploy ui` 完了後に Streamlit UI に切り替わります。
+そのため `azd up` の途中で UI を開いても helloworld 画面が出るのが正常で、`azd deploy ui` 完了後に FastAPI UI に切り替わります。
 
 ✅ **検証済み実測時間**（別 RG で実機検証）:
 - 初回 `azd provision`: **約 3 分**（ACA は 17 秒で作成、Operation expired なし）
@@ -545,7 +563,7 @@ Write-Host "  Start-Process $url"
 📚 **参考資料**
 - [Azure Container Apps の概要](https://learn.microsoft.com/azure/container-apps/overview)
 - [Container Apps の Ingress 設定](https://learn.microsoft.com/azure/container-apps/ingress-overview)
-- [Streamlit 公式ドキュメント](https://docs.streamlit.io/)
+- [FastAPI 公式ドキュメント](https://fastapi.tiangolo.com/)
 
 ---
 
@@ -805,9 +823,9 @@ azd down --purge
 
 ## 13. UI からの処理状況・エラー監視
 
-💡 **Streamlit**: Python だけでデータ系の Web UI を構築できる OSS フレームワーク。本システムでは `ui/app.py` がすべてのタブ・チャート・ボタンを定義しています。
+UI は `ui/main.py` をエントリポイントとする FastAPI アプリで、画面は `ui/templates/` と `ui/static/` から配信します。
 
-Streamlit UI の **「📊 処理状況」タブ** で以下が一目で確認できます。
+UI の **「📊 処理状況」タブ** で以下が一目で確認できます。
 
 | メトリクス / セクション | 内容 |
 |---|---|
@@ -833,12 +851,23 @@ az storage message peek --queue-name blob-events-poison --account-name $stName -
 ```
 
 📚 **参考資料**
-- [Streamlit ドキュメント](https://docs.streamlit.io/)
+- [FastAPI 公式ドキュメント](https://fastapi.tiangolo.com/)
 - [Storage Queue の概要](https://learn.microsoft.com/azure/storage/queues/storage-queues-introduction)
 
 ---
 
 ## 14. 音声フォーマット要件とトラブルシューティング
+
+### Realtime 音声認識
+
+ブラウザのマイク音声は `ui/static/app.js` で **24 kHz / 16 bit / mono PCM** に変換し、`/ws/audio/{session_id}` へ送信します。Realtime API の transcription delta は増分断片のため、サーバーは確定イベントまで順番に連結して partial transcript として返します。server VAD が発話終端を自動検出するため、通常利用では手動 commit は不要です。
+
+デプロイ後は、短い日本語発話で次を確認してください。
+
+- `/api/session/start` が HTTP 200 を返す
+- transcript の `audio_chunk_count` が増加する
+- 発話中の partial が累積表示され、確定後に最終 transcript へ移る
+- transcript events に `error` がない
 
 💡 **Speech Batch Transcription**: 長尺音声を非同期でまとめて文字起こしする Speech API。投入時に `contentUrls`（音声 blob の URL 配列）を渡すと、内部ジョブが進み完了後に結果 JSON が取得できます。本システムは v3.2 を利用。
 
@@ -853,9 +882,7 @@ az storage message peek --queue-name blob-events-poison --account-name $stName -
 | サンプリングレート | 8 / 16 / 32 / 44.1 / 48 kHz |
 | チャンネル | mono / stereo（diarization 利用時は mono/stereo 推奨） |
 
-> 💡 **動画ファイル (.mp4 / .mov / .mkv / .webm / .avi)** は UI 側のブラウザ内 `ffmpeg.wasm` で **`.mp3` (libmp3lame, 64 kbps mono 16 kHz)** に再エンコードしてからアップロードされます（Streamlit カスタムコンポーネント `ui/components/ffmpeg_extractor/`）。サーバ側に FFmpeg は不要で、Functions Flex Consumption をそのまま使えます。`ffmpeg-core` (~30MB) は自前ホスト（`ui/components/ffmpeg_extractor/frontend/vendor/`）から同一オリジンで配信されるため、CDN 接続不要・閉域ネットワークでも動作します。`SharedArrayBuffer` 対応ブラウザ（モダン Chrome/Edge/Firefox）が必要です。アップロード上限は Streamlit 設定で 1GB (`server.maxUploadSize=1024`, `server.maxMessageSize=1100` MB) に拡張済みですが、ブラウザ内 ffmpeg.wasm のメモリ制約により、**安定動作の実用上限は動画 500MB 程度** が目安です。それを超えるサイズはタブのメモリ次第で失敗する可能性があります。1GB 級を本格的に扱う場合は SAS 直接アップロード方式への変更を検討してください。
->
-> ⚠️ **なぜ MP3 か（AAC/m4a を採用しない理由）**: ffmpeg.wasm 同梱の native AAC encoder + `ipod` コンテナ（`.m4a` 出力）では、`moov` atom がファイル末尾に配置され（`+faststart` 相当なし）、Azure Speech Batch Transcription が `InvalidData: The audio format is invalid or cannot be detected` で拒否します。libmp3lame はコンテナ atom 概念がなくストリーム解析できるため、Speech 側に確実に受け入れられます。
+> 動画ファイルは Functions の処理対象外です。`ffmpeg` などで音声トラックを対応音声形式へ変換してから `input` コンテナへ配置してください。
 
 ### `InvalidData: The recordings URI contains invalid data` の原因切り分け
 
@@ -897,8 +924,15 @@ ffmpeg -i input.mp3 -ac 1 -ar 16000 -sample_fmt s16 output.wav
 | 症状 | 対処 |
 |------|------|
 | `azd provision` でエラー | `az deployment sub what-if` で Bicep テンプレートの問題を確認 |
+| `Virtual network resource not found` | subnet を VNet とは別の child resource として並行作成しない。本リポジトリの `network.bicep` は4 subnet を VNet の `properties.subnets` に含め、1回の PUT で作成する |
+| Search が `InsufficientResourcesAvailable` | `azd env set AZURE_SEARCH_LOCATION <利用可能なリージョン>` を実行して Search だけを別リージョンへ配置し、`azd provision` を再実行する |
+| Search projection が key analyzer を要求 | `documents.id` を `searchable: true`、`analyzer: keyword` とする。projection target の key はこの組み合わせが必須 |
+| `Existing field 'id' cannot be changed` | Search のフィールド属性は既存 index 上で変更できない。対象 index のデータを失ってよいことを確認して `documents` index を削除し、`azd provision` で再作成する |
+| `postprovision` が Search の更新で長時間待機 | Search の `properties.provisioningState` を確認する。`provisioning` 中は停止せず、`succeeded` になるまで待つ。フック終了後に `publicNetworkAccess=Disabled` を確認する |
 | `azd deploy` で Functions デプロイ失敗 | `predeploy` フックで Public Access が開放されているか確認 |
 | `azd deploy` で ACR push 失敗 | ACR の Public Access が一時開放されているか確認 |
+| hook が `AZURE_SUBSCRIPTION_ID が設定されていません` で失敗 | セクション 4 の手順で `azd env get-values` を同じ PowerShell プロセスへ読み込み、デプロイを再実行する |
+| Realtime 認識結果が発話中に末尾の断片しか表示されない | `ui/modules/realtime_session.py` が transcription delta を上書きせず累積していることを確認し、最新 UI revision をデプロイする |
 | ファイルアップロード後に output が出ない | UI の「処理状況」タブで poison queue とエラーログを確認（セクション 13） |
 | `Transcription failed: ... InvalidData ...` | 音声ファイルのコーデック不適合。`ffprobe` で確認し WAV に変換（セクション 14） |
 | Speech が `Failed: Forbidden` / `AuthorizationFailure` | Storage の `resourceAccessRules` に AI Services ID が登録されているか、AI Services MI に `Storage Blob Data Reader` が付与されているか確認 |
@@ -967,7 +1001,7 @@ azd provision
             ↓ 未認証
         Microsoft サインインページ（Entra ID）
             ↓ サインイン成功
-        Streamlit UI（X-MS-CLIENT-PRINCIPAL ヘッダーで ID 情報受領）
+        FastAPI UI（X-MS-CLIENT-PRINCIPAL ヘッダーで ID 情報受領）
 ```
 
 **実装手順（概要）**
@@ -985,7 +1019,7 @@ azd provision
 
 - **アクセス制御の単位**：個人単位 / Entra ID グループ単位（`allowedGroups` で制御）
 - **多要素認証（MFA）**：Conditional Access で強制
-- **Streamlit 側での ID 利用**：`X-MS-CLIENT-PRINCIPAL` ヘッダーから userPrincipalName を取得し操作ログに記録
+- **FastAPI 側での ID 利用**：`X-MS-CLIENT-PRINCIPAL` ヘッダーから userPrincipalName を取得し操作ログに記録
 - **Client Secret の更新運用**：24 ヶ月期限のため Key Vault + Managed Identity への移行も検討
 
 📚 [Container Apps の認証・許可](https://learn.microsoft.com/azure/container-apps/authentication) ／ [Microsoft Entra プロバイダー](https://learn.microsoft.com/azure/container-apps/authentication-entra) ／ [Easy Auth クライアントプリンシパル](https://learn.microsoft.com/azure/app-service/configure-authentication-user-identities)
