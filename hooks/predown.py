@@ -20,6 +20,7 @@ AZ_READ_RETRY_DELAY_SECONDS = 2
 COGNITIVE_SERVICES_API_VERSION = "2025-04-01-preview"
 WEB_SITES_API_VERSION = "2024-04-01"
 MANAGED_ENVIRONMENTS_API_VERSION = "2024-03-01"
+SEARCH_API_VERSION = "2023-11-01"
 
 
 def progress(message: str) -> None:
@@ -152,6 +153,38 @@ def delete_container_apps(resource_group: str, subscription_id: str) -> None:
         )
         progress(">>> Waiting for Container Apps Environment deletion...")
         wait_until_deleted(environment_id, MANAGED_ENVIRONMENTS_API_VERSION)
+
+
+def delete_search_shared_private_links(
+    resource_group: str, subscription_id: str
+) -> None:
+    services = az(
+        "resource",
+        "list",
+        "--resource-group",
+        resource_group,
+        "--resource-type",
+        "Microsoft.Search/searchServices",
+        "--subscription",
+        subscription_id,
+    )
+    for service in services or []:
+        links_uri = (
+            f"{service['id']}/sharedPrivateLinkResources"
+            f"?api-version={SEARCH_API_VERSION}"
+        )
+        links = az("rest", "--method", "GET", "--uri", links_uri)
+        for link in links.get("value", []):
+            link_id = link["id"]
+            progress(f">>> Deleting Search shared private link: {link_id}")
+            az(
+                "rest",
+                "--method",
+                "DELETE",
+                "--uri",
+                f"{link_id}?api-version={SEARCH_API_VERSION}",
+            )
+            wait_until_deleted(link_id, SEARCH_API_VERSION)
 
 
 def delete_capability_hosts(parent_id: str, display_name: str) -> None:
@@ -408,6 +441,7 @@ def main() -> int:
             return 0
 
         progress(">>> Releasing VNet integrations before azd down...")
+        delete_search_shared_private_links(resource_group, subscription_id)
         delete_function_apps(resource_group, subscription_id)
         delete_container_apps(resource_group, subscription_id)
         delete_and_purge_foundry_resources(resource_group, subscription_id)

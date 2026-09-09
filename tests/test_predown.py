@@ -189,6 +189,45 @@ def test_delete_container_environment_uses_single_rest_delete_then_waits(monkeyp
 
 
 @pytest.mark.unit
+def test_delete_search_shared_private_links_deletes_children_and_waits(monkeypatch):
+    search_id = (
+        "/subscriptions/sub/resourceGroups/rg/providers/"
+        "Microsoft.Search/searchServices/search"
+    )
+    shared_link_id = f"{search_id}/sharedPrivateLinkResources/spl-blob"
+    calls: list[tuple] = []
+
+    def fake_az(*args, **_kwargs):
+        calls.append(args)
+        if args[:3] == ("resource", "list", "--resource-group"):
+            return [{"id": search_id}]
+        if args[:3] == ("rest", "--method", "GET"):
+            return {"value": [{"id": shared_link_id}]}
+        if args[:3] == ("rest", "--method", "DELETE"):
+            return None
+        raise AssertionError(f"Unexpected az invocation: {args}")
+
+    waits: list[tuple[str, str]] = []
+    monkeypatch.setattr(predown, "az", fake_az)
+    monkeypatch.setattr(
+        predown,
+        "wait_until_deleted",
+        lambda resource_id, api_version: waits.append((resource_id, api_version)),
+    )
+
+    predown.delete_search_shared_private_links("rg", "sub")
+
+    assert calls[-1] == (
+        "rest",
+        "--method",
+        "DELETE",
+        "--uri",
+        f"{shared_link_id}?api-version={predown.SEARCH_API_VERSION}",
+    )
+    assert waits == [(shared_link_id, predown.SEARCH_API_VERSION)]
+
+
+@pytest.mark.unit
 def test_require_links_released_raises_when_link_remains(monkeypatch):
     remaining_link = {
         "vnet": "test-vnet",
@@ -213,6 +252,11 @@ def test_main_blocks_teardown_before_ampls_delete_when_link_remains(monkeypatch)
     monkeypatch.setenv("AZURE_SUBSCRIPTION_ID", "test-subscription")
     monkeypatch.setenv("AZURE_RESOURCE_GROUP", "test-rg")
     monkeypatch.setattr(predown, "az", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        predown,
+        "delete_search_shared_private_links",
+        lambda *_: calls.append("search-links"),
+    )
     monkeypatch.setattr(
         predown,
         "delete_function_apps",
@@ -243,7 +287,13 @@ def test_main_blocks_teardown_before_ampls_delete_when_link_remains(monkeypatch)
     result = predown.main()
 
     assert result == 1
-    assert calls == ["functions", "container-apps", "foundry", "links"]
+    assert calls == [
+        "search-links",
+        "functions",
+        "container-apps",
+        "foundry",
+        "links",
+    ]
 
 
 @pytest.mark.unit
@@ -252,6 +302,11 @@ def test_main_allows_teardown_after_links_are_released(monkeypatch):
     monkeypatch.setenv("AZURE_SUBSCRIPTION_ID", "test-subscription")
     monkeypatch.setenv("AZURE_RESOURCE_GROUP", "test-rg")
     monkeypatch.setattr(predown, "az", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        predown,
+        "delete_search_shared_private_links",
+        lambda *_: calls.append("search-links"),
+    )
     monkeypatch.setattr(
         predown,
         "delete_function_apps",
@@ -281,4 +336,11 @@ def test_main_allows_teardown_after_links_are_released(monkeypatch):
     result = predown.main()
 
     assert result == 0
-    assert calls == ["functions", "container-apps", "foundry", "links", "ampls"]
+    assert calls == [
+        "search-links",
+        "functions",
+        "container-apps",
+        "foundry",
+        "links",
+        "ampls",
+    ]

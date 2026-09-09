@@ -1,102 +1,102 @@
-@description('リソースのデプロイ先リージョン。')
-param location string
+@description('リソースのデプロイ先リージョン。')  
+param location string  
 @description('Private Endpoint のデプロイ先リージョン。接続先 VNet と同じリージョンを指定。')
 param privateEndpointLocation string
-@description('リソースに付与する共通タグ。')
-param tags object
-@description('Private Endpoint を配置するサブネットのリソース ID。')
-param subnetPrivateEndpointsId string
-@description('Search 用 Private DNS ゾーンのリソース ID。')
-param privateDnsZoneSearchId string
+@description('リソースに付与する共通タグ。')  
+param tags object  
+@description('Private Endpoint を配置するサブネットのリソース ID。')  
+param subnetPrivateEndpointsId string  
+@description('Search 用 Private DNS ゾーンのリソース ID。')  
+param privateDnsZoneSearchId string  
+  
+@description('Search service sku')  
+param sku string = 'basic'  
+  
+@description('Search index name')  
+param indexName string = 'documents'  
+  
+@description('Semantic configuration name')  
+param semanticConfigName string = 'default-semantic'  
+  
+@description('Search サービス名（トークン付与済み最終名）')  
+param searchName string  
+  
+@description('Search の Private Endpoint 名')  
+param peSearchName string  
 
-@description('Search service sku')
-param sku string = 'basic'
+@description('インデクサーが blob を読むデータ用 Storage のリソース ID（shared private link 対象）。')  
+param dataStorageAccountId string  
 
-@description('Search index name')
-param indexName string = 'documents'
+@description('ベクトライザー/スキルが呼ぶ AI Services のリソース ID（shared private link 対象）。')  
+param aiServicesId string  
 
-@description('Semantic configuration name')
-param semanticConfigName string = 'default-semantic'
+@description('azd 実行者の Entra ID オブジェクト ID（postprovision hook が index/indexer を作成するため）。')  
+param deployerPrincipalId string  
 
-@description('Search サービス名（トークン付与済み最終名）')
-param searchName string
-
-@description('Search の Private Endpoint 名')
-param peSearchName string
-
-@description('インデクサーが blob を読むデータ用 Storage のリソース ID（shared private link 対象）。')
-param dataStorageAccountId string
-
-@description('ベクトライザー/スキルが呼ぶ AI Services のリソース ID（shared private link 対象）。')
-param aiServicesId string
-
-@description('azd 実行者の Entra ID オブジェクト ID（postprovision hook が index/indexer を作成するため）。')
-param deployerPrincipalId string
-
-@description('azd 実行者のプリンシパル種別。')
-@allowed([
-  'User'
-  'ServicePrincipal'
-  'Group'
-])
-param deployerPrincipalType string = 'User'
-
-resource search 'Microsoft.Search/searchServices@2023-11-01' = {
-  name: searchName
-  location: location
-  tags: tags
-  sku: {
-    name: sku
-  }
-  identity: {
-    type: 'SystemAssigned'
-  }
-  properties: {
-    publicNetworkAccess: 'disabled'
-    disableLocalAuth: true
-    replicaCount: 1
-    partitionCount: 1
-    hostingMode: 'default'
-  }
-}
-
-resource peSearch 'Microsoft.Network/privateEndpoints@2024-01-01' = {
-  name: peSearchName
+@description('azd 実行者のプリンシパル種別。')  
+@allowed([  
+  'User'  
+  'ServicePrincipal'  
+  'Group'  
+])  
+param deployerPrincipalType string = 'User'  
+  
+resource search 'Microsoft.Search/searchServices@2023-11-01' = {  
+  name: searchName  
+  location: location  
+  tags: tags  
+  sku: {  
+    name: sku  
+  }  
+  identity: {  
+    type: 'SystemAssigned'  
+  }  
+  properties: {  
+    publicNetworkAccess: 'disabled'  
+    disableLocalAuth: true  
+    replicaCount: 1  
+    partitionCount: 1  
+    hostingMode: 'default'  
+  }  
+}  
+  
+resource peSearch 'Microsoft.Network/privateEndpoints@2024-01-01' = {  
+  name: peSearchName  
   location: privateEndpointLocation
-  tags: tags
-  properties: {
-    subnet: {
-      id: subnetPrivateEndpointsId
-    }
-    privateLinkServiceConnections: [
-      {
-        name: 'psc-search'
-        properties: {
-          privateLinkServiceId: search.id
-          groupIds: [
-            'searchService'
-          ]
-        }
-      }
-    ]
-  }
-}
-
-resource peSearchDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = {
-  parent: peSearch
-  name: 'dns-zone-group-search'
-  properties: {
-    privateDnsZoneConfigs: [
-      {
-        name: 'search'
-        properties: {
-          privateDnsZoneId: privateDnsZoneSearchId
-        }
-      }
-    ]
-  }
-}
-
+  tags: tags  
+  properties: {  
+    subnet: {  
+      id: subnetPrivateEndpointsId  
+    }  
+    privateLinkServiceConnections: [  
+      {  
+        name: 'psc-search'  
+        properties: {  
+          privateLinkServiceId: search.id  
+          groupIds: [  
+            'searchService'  
+          ]  
+        }  
+      }  
+    ]  
+  }  
+}  
+  
+resource peSearchDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = {  
+  parent: peSearch  
+  name: 'dns-zone-group-search'  
+  properties: {  
+    privateDnsZoneConfigs: [  
+      {  
+        name: 'search'  
+        properties: {  
+          privateDnsZoneId: privateDnsZoneSearchId  
+        }  
+      }  
+    ]  
+  }  
+}  
+  
 // Shared Private Link: Search → データ Storage (blob)。インデクサーが閉域の blob を読むための送信経路。
 // 作成後、対象 Storage 側の private endpoint connection を承認する必要がある（postprovision hook）。
 resource splBlob 'Microsoft.Search/searchServices/sharedPrivateLinkResources@2023-11-01' = {
@@ -162,9 +162,9 @@ resource deployerSearchDataContributor 'Microsoft.Authorization/roleAssignments@
   }
 }
 
-output searchServiceName string = search.name
-output searchEndpoint string = 'https://${search.name}.search.windows.net'
-output searchId string = search.id
-output searchPrincipalId string = search.identity.principalId
-output indexName string = indexName
-output semanticConfigName string = semanticConfigName
+output searchServiceName string = search.name  
+output searchEndpoint string = 'https://${search.name}.search.windows.net'  
+output searchId string = search.id  
+output searchPrincipalId string = search.identity.principalId  
+output indexName string = indexName  
+output semanticConfigName string = semanticConfigName    

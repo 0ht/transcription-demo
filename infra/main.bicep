@@ -228,59 +228,59 @@ module eventgrid 'modules/eventgrid.bicep' = {
   }
 }
 
-module containerApps 'modules/container-apps.bicep' = {
-  name: 'containerApps'
-  scope: rg
-  params: {
-    environment: environmentName
-    location: location
-    tags: tags
-    subnetAcaId: network.outputs.subnetAcaId
-    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
-    logAnalyticsWorkspaceResourceId: monitoring.outputs.logAnalyticsWorkspaceResourceId
-    dataStorageAccountName: storage.outputs.dataStorageAccountName
-    dataStorageAccountId: storage.outputs.dataStorageAccountId
-    acrLoginServer: acr.outputs.acrLoginServer
-    acrId: acr.outputs.acrId
-    allowedIpRanges: allowedIpRanges
-    uiExists: uiExists
-    containerAppEnvName: containerAppEnvName
-    containerAppName: containerAppName
-
-    azureOpenAIEndpoint: ai.outputs.openAIEndpoint
-    azureOpenAIId: ai.outputs.openAIId
-    azureOpenAIChatDeployment: ai.outputs.chatDeployment
-    azureOpenAIRealtimeDeployment: ai.outputs.realtimeDeployment
-    azureOpenAITranscribeDeployment: ai.outputs.transcribeDeployment
-    azureOpenAIApiVersion: '2025-04-01-preview'
-    aiServicesEndpoint: ai.outputs.aiServicesEndpoint
+module containerApps 'modules/container-apps.bicep' = {  
+  name: 'containerApps'  
+  scope: rg  
+  params: {  
+    environment: environmentName  
+    location: location  
+    tags: tags  
+    subnetAcaId: network.outputs.subnetAcaId  
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId  
+    logAnalyticsWorkspaceResourceId: monitoring.outputs.logAnalyticsWorkspaceResourceId  
+    dataStorageAccountName: storage.outputs.dataStorageAccountName  
+    dataStorageAccountId: storage.outputs.dataStorageAccountId  
+    acrLoginServer: acr.outputs.acrLoginServer  
+    acrId: acr.outputs.acrId  
+    allowedIpRanges: allowedIpRanges  
+    uiExists: uiExists  
+    containerAppEnvName: containerAppEnvName  
+    containerAppName: containerAppName  
+  
+    azureOpenAIEndpoint: ai.outputs.openAIEndpoint  
+    azureOpenAIId: ai.outputs.openAIId  
+    azureOpenAIChatDeployment: ai.outputs.chatDeployment  
+    azureOpenAIRealtimeDeployment: ai.outputs.realtimeDeployment  
+    azureOpenAITranscribeDeployment: ai.outputs.transcribeDeployment  
+    azureOpenAIApiVersion: '2025-04-01-preview'  
+    aiServicesEndpoint: ai.outputs.aiServicesEndpoint  
     aiServicesId: ai.outputs.aiServicesId
+  
+    azureSearchEndpoint: search.outputs.searchEndpoint  
+    azureSearchId: search.outputs.searchId  
+    azureSearchPrincipalId: search.outputs.searchPrincipalId  
+    azureSearchIndexName: search.outputs.indexName  
+    azureSearchSemanticConfig: search.outputs.semanticConfigName  
+    readFields: 'content,source_file,transcript_path,chunk_id,speaker,start_time'  
+  }  
+}  
 
-    azureSearchEndpoint: search.outputs.searchEndpoint
-    azureSearchId: search.outputs.searchId
-    azureSearchPrincipalId: search.outputs.searchPrincipalId
-    azureSearchIndexName: search.outputs.indexName
-    azureSearchSemanticConfig: search.outputs.semanticConfigName
-    readFields: 'content,source_file,transcript_path,chunk_id,speaker,start_time'
-  }
-}
-
-module search 'modules/search.bicep' = {
-  name: 'search'
-  scope: rg
-  params: {
-    location: searchLocation
+module search 'modules/search.bicep' = {  
+  name: 'search'  
+  scope: rg  
+  params: {  
+    location: searchLocation  
     privateEndpointLocation: location
-    tags: tags
-    subnetPrivateEndpointsId: network.outputs.subnetPrivateEndpointsId
-    privateDnsZoneSearchId: network.outputs.privateDnsZoneSearchId
-    searchName: searchName
-    peSearchName: peSearchName
-    dataStorageAccountId: storage.outputs.dataStorageAccountId
-    aiServicesId: ai.outputs.aiServicesId
-    deployerPrincipalId: principalId
-  }
-}
+    tags: tags  
+    subnetPrivateEndpointsId: network.outputs.subnetPrivateEndpointsId  
+    privateDnsZoneSearchId: network.outputs.privateDnsZoneSearchId  
+    searchName: searchName  
+    peSearchName: peSearchName  
+    dataStorageAccountId: storage.outputs.dataStorageAccountId  
+    aiServicesId: ai.outputs.aiServicesId  
+    deployerPrincipalId: principalId  
+  }  
+}  
 
 module foundryAgentProject 'modules/foundry-agent-project.bicep' = {
   name: 'foundry-agent-project'
@@ -311,14 +311,14 @@ output SERVICE_UI_RESOURCE_NAME string = containerApps.outputs.containerAppName
 output AZURE_CONTAINER_APP_ENVIRONMENT_NAME string = containerApps.outputs.containerAppEnvironmentName
 output AI_SERVICES_ENDPOINT string = ai.outputs.aiServicesEndpoint
 output CONTAINER_APP_URL string = containerApps.outputs.containerAppUrl
-output AZURE_OPENAI_ENDPOINT string = ai.outputs.openAIEndpoint
-output AZURE_OPENAI_CHAT_DEPLOYMENT string = ai.outputs.chatDeployment
-output AZURE_SEARCH_ENDPOINT string = search.outputs.searchEndpoint
-output AZURE_SEARCH_INDEX_NAME string = search.outputs.indexName
-output AZURE_SEARCH_SEMANTIC_CONFIG string = search.outputs.semanticConfigName
-output AZURE_SEARCH_SERVICE_NAME string = search.outputs.searchServiceName
-output AZURE_OPENAI_EMBEDDING_DEPLOYMENT string = ai.outputs.embeddingDeployment
-output AZURE_DATA_STORAGE_ACCOUNT_NAME string = storage.outputs.dataStorageAccountName
+output AZURE_OPENAI_ENDPOINT string = ai.outputs.openAIEndpoint  
+output AZURE_OPENAI_CHAT_DEPLOYMENT string = ai.outputs.chatDeployment  
+output AZURE_SEARCH_ENDPOINT string = search.outputs.searchEndpoint  
+output AZURE_SEARCH_INDEX_NAME string = search.outputs.indexName  
+output AZURE_SEARCH_SEMANTIC_CONFIG string = search.outputs.semanticConfigName  
+output AZURE_SEARCH_SERVICE_NAME string = search.outputs.searchServiceName  
+output AZURE_OPENAI_EMBEDDING_DEPLOYMENT string = ai.outputs.embeddingDeployment  
+output AZURE_DATA_STORAGE_ACCOUNT_NAME string = storage.outputs.dataStorageAccountName  
 output AI_SERVICES_ACCOUNT_NAME string = last(split(ai.outputs.aiServicesId, '/'))
 output AZURE_COSMOS_ENDPOINT string = cosmos.outputs.cosmosEndpoint
 output AZURE_COSMOS_DATABASE_NAME string = cosmos.outputs.databaseName

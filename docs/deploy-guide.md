@@ -774,15 +774,18 @@ Foundry Agent Service の VNet 注入では、Capability Host が Agent subnet �
 
 本リポジトリの `predown` hook は、`azd down` の前に次の順序で処理します。
 
-1. Function App を削除する。
-2. Container App と Container Apps Environment を削除する。
-3. Project-level Capability Host を削除する。
-4. Account-level Capability Host を削除する。
-5. Foundry Project を削除する。
-6. AI Services account を削除して purge する。
-7. 残存する soft-deleted account を purge する。
-8. SAL の消失を最大 20 分待機する。
-9. SAL が消失した場合だけ Azure Monitor Private Link Scope を削除し、`azd down` を続行する。
+1. Azure AI Search の shared private link を削除し、削除完了を待機する。
+2. Function App を削除する。
+3. Container App と Container Apps Environment を削除する。
+4. Project-level Capability Host を削除する。
+5. Account-level Capability Host を削除する。
+6. Foundry Project を削除する。
+7. AI Services account を削除して purge する。
+8. 残存する soft-deleted account を purge する。
+9. SAL の消失を最大 20 分待機する。
+10. SAL が消失した場合だけ Azure Monitor Private Link Scope を削除し、`azd down` を続行する。
+
+Search の shared private link は Storage / Azure OpenAI より先に削除する。残したまま参照先を削除すると、`LockedSPLResourceFound` により参照先の削除が失敗する。
 
 SAL の解除は Capability Host の削除後に Azure 側で非同期に行われます。20 分以内に消えない場合、hook は安全のため非ゼロで終了し、`azd down` を中止します。Microsoft の公式 cleanup ではバックエンド処理に最大 24 時間かかる場合があるとされています。時間を置いて `azd down --purge` を再実行してください。
 
@@ -938,7 +941,7 @@ ffmpeg -i input.mp3 -ac 1 -ar 16000 -sample_fmt s16 output.wav
 | Speech が `Failed: Forbidden` / `AuthorizationFailure` | Storage の `resourceAccessRules` に AI Services ID が登録されているか、AI Services MI に `Storage Blob Data Reader` が付与されているか確認 |
 | 音声ファイルの文字起こしに失敗（その他） | AI Services の RBAC (`Cognitive Services Speech User`) を確認 |
 | UI が表示されない | Container App の Ingress FQDN とプロビジョニング状態を確認 |
-| `azd down` 後にリソースが残る | `az group delete -n rg-transcription-dev --yes` で強制削除 |
+| `azd down` 後に Search または参照先が残る | `LockedSPLResourceFound` の有無を確認し、最新の `predown` hook で `azd down --purge` を再実行する。`az group delete` で hook を迂回しない |
 | `RoleAssignmentExists` エラーで provision が失敗 | 古い role assignment を `az role assignment delete --ids <id>` で手動削除後再実行 |
 | Container App が `Operation expired` で失敗（初回プロビジョニング時） | VNet 統合 ACA で ACR レジストリを含めて作成すると ACA プラットフォームの認証検証と AcrPull RBAC のレースで 20 分タイムアウト。本 Bicep は Microsoft 公式 `exists` パターンを採用して初回は `registries: []` + 公開プレースホルダーで作成、`azd deploy ui` で ACR イメージ push 後の 2 回目 provision で ACR 参照に差し替えるよう設計されています。もし何らかの原因でこれが発生した場合は、`az containerapp delete -g <RG> -n ca-transcription-ui-<env> --yes` で ACA を削除後 `azd env set SERVICE_UI_RESOURCE_EXISTS false` を実行し、再度 `azd provision` してください。 |
 
