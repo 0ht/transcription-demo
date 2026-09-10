@@ -1,4 +1,4 @@
-console.log("APP_JS_CHAT_LAYOUT_V8 LOADED");  
+console.log("APP_JS_CHAT_LAYOUT_V0 LOADED");  
   
 let currentSessionId = null;  
 let ws = null;  
@@ -239,14 +239,14 @@ function buildAssistantAnalysisHtml(data) {
     ${summary ? `  
       <div class="assistant-card-section" style="margin-top:0;padding-top:0;border-top:none;">  
         <h4>要約</h4>  
-        <div>${escapeHtml(summary).replaceAll("\n", "<br>")}</div>  
+        <div>${formatAssistantText(summary, { removeCitations: true, linkify: true })}</div>  
       </div>  
     ` : ""}  
   
     ${analysis ? `  
       <div class="assistant-card-section">  
         <h4>回答</h4>  
-        <div>${escapeHtml(analysis).replaceAll("\n", "<br>")}</div>  
+        <div>${formatAssistantText(analysis, { removeCitations: true, linkify: true })}</div>  
       </div>  
     ` : ""}  
   
@@ -295,8 +295,9 @@ function updateButtonStates() {
       !hasSession ||  
       isSessionStarting ||  
       isSessionStopping ||  
-      isMicStarting ||  
-      !isMicRecording;  
+      isMicStarting;  
+  
+    pauseConversationBtn.textContent = isMicRecording ? "一時停止" : "再開";  
   }  
   
   if (stopConversationBtn) {  
@@ -487,6 +488,7 @@ async function stopSession() {
     stopTranscriptPolling();  
   
     const sessionIdToStop = currentSessionId;  
+    const prompt_set_name = promptSetSelect.value;  
   
     // 先に録音・通信停止  
     await stopMic();  
@@ -539,6 +541,7 @@ async function stopSession() {
     updateButtonStates();  
   }  
 }  
+
   
 async function startOrResumeConversation() {  
   try {  
@@ -567,6 +570,27 @@ async function pauseConversation() {
     updateButtonStates();  
   }  
 }  
+
+async function togglePauseResumeConversation() {  
+  try {  
+    if (!currentSessionId) {  
+      alert("先に会話開始してください");  
+      return;  
+    }  
+  
+    if (isMicRecording) {  
+      await pauseConversation();  
+    } else {  
+      await startMic();  
+    }  
+  } catch (e) {  
+    alert("一時停止/再開に失敗しました\n" + e.message);  
+  } finally {  
+    updateButtonStates();  
+  }  
+}  
+
+
   
 async function refreshTranscript(silent = false) {  
   try {  
@@ -686,6 +710,7 @@ async function analyzeWithOptionalUserPrompt(userPrompt = "") {
 }  
   
 async function sendChat() {  
+  const rawText = chatInput.value;
   const text = chatInput.value.trim();  
   if (!text) {  
     return;  
@@ -698,6 +723,8 @@ async function sendChat() {
     latestAnalysisData,  
     hasLatestAnalysisData: !!latestAnalysisData  
   });  
+
+  chatInput.value = "";
   
   try {  
     isAnalyzing = true;  
@@ -737,6 +764,10 @@ async function sendChat() {
         prompt_set_name: promptSetSelect.value,  
         user_instruction: text  
       });  
+
+      latestAnalysisData = {  
+        ...(analysisData || {})  
+      };  
   
       showAnalysisCard(analysisData);  
       pushChatMessage(  
@@ -765,15 +796,29 @@ async function sendChat() {
     if (data.context_title) {  
       chatContextTitle.textContent = data.context_title;  
     }  
+      
+    latestAnalysisData = {  
+      ...(latestAnalysisData || {}),  
+      topic_title: data.context_title || "",  
+      summary: data.summary || "",  
+      search_query: data.search_query || "",  
+      docs: data.docs || [],  
+      analysis: data.reply || "",  
+      next_actions: data.next_actions || []  
+    };  
+      
+    showAnalysisCard(latestAnalysisData);  
   
     pushChatMessage(  
       "assistant",  
       buildAssistantChatHtml(data.reply || "", data.docs || [], data.search_query || "")  
     );  
-  
-    chatInput.value = "";  
   } catch (e) {  
     console.error("[sendChat] error", e);  
+
+    // 失敗時は入力欄に戻す  
+    chatInput.value = rawText;  
+    
     alert("チャット送信に失敗しました\n" + e.message);  
   } finally {  
     isAnalyzing = false;  
@@ -1057,18 +1102,42 @@ function buildDocsDetailsHtml(docs = []) {
     <details class="assistant-details">  
       <summary>取得文書を表示 (${docs.length}件)</summary>  
       <div class="docs-list" style="margin-top: 10px;">  
-        ${docs.map((doc, idx) => `  
+        ${docs.map((doc, idx) => {  
+          const title = doc.title || doc.file_name || "No Title";  
+          const content = truncateText(doc.content || doc.chunk || doc.text || "", 220);  
+  
+          // URLとして使う候補は url 系だけを優先  
+          const link = doc.url || doc.web_url || doc.source_url || "";  
+          // source はラベル扱い  
+          const sourceLabel = doc.source || "";  
+  
+          return `  
           <div class="doc-item">  
-            <strong>${idx + 1}. ${escapeHtml(doc.title || doc.file_name || "No Title")}</strong>  
+              <strong>${idx + 1}. ${escapeHtml(title)}</strong>  
+  
+              ${  
+                link  
+                  ? `<div class="small" style="margin-top: 6px;">  
+                       ${renderSafeLinkOrText(link)}  
+                     </div>`  
+                  : sourceLabel  
+                    ? `<div class="small" style="margin-top: 6px;">  
+                         ${escapeHtml(sourceLabel)}  
+                       </div>`  
+                    : ""  
+              }  
+  
             <div class="small" style="margin-top: 6px;">  
-              ${escapeHtml(truncateText(doc.content || doc.chunk || doc.text || "", 220)).replaceAll("\n", "<br>")}  
+                ${formatAssistantText(content, { removeCitations: true, linkify: true })}  
             </div>  
           </div>  
-        `).join("")}  
+          `;  
+        }).join("")}  
       </div>  
     </details>  
   `;  
 }  
+
   
 function buildFollowupChipsHtml(items = []) {  
   if (!items.length) return "";  
@@ -1083,35 +1152,12 @@ function buildFollowupChipsHtml(items = []) {
 }  
   
 function buildAssistantChatHtml(reply, docs = [], searchQuery = "") {  
-  const shortReply = truncateText(reply, 500);  
-  
   return `  
-    <div>${escapeHtml(shortReply).replaceAll("\n", "<br>")}</div>  
-  
-    ${buildFollowupChipsHtml([  
-      "もっと短く",  
-      "具体例を追加して",  
-      "懸念点も教えて",  
-      "箇条書きで整理して"  
-    ])}  
-  
-    ${searchQuery ? `  
-      <details class="assistant-details">  
-        <summary>検索クエリを表示</summary>  
-        <div style="margin-top: 8px;">${escapeHtml(searchQuery)}</div>  
-      </details>  
-    ` : ""}  
-  
-    ${reply && reply.length > 500 ? `  
-      <details class="assistant-details">  
-        <summary>全文を表示</summary>  
-        <div style="margin-top: 8px; white-space: pre-wrap;">${escapeHtml(reply)}</div>  
-      </details>  
-    ` : ""}  
-  
-    ${buildDocsDetailsHtml(docs)}  
+    <div class="chat-answer-text">${formatAssistantText(reply, { removeCitations: true, linkify: true })}</div>  
+    ${docs.length ? `<div class="chat-answer-meta">関連資料を参照して回答</div>` : ""}  
   `;  
 }  
+
   
 function restoreChatMessagesFromHistory(items = []) {  
   clearChatMessages();  
@@ -1150,6 +1196,79 @@ function clearDebugInput() {
   debugTextBox.value = "";  
   debugTextBox.focus();  
 }  
+
+
+
+function linkifyEscapedText(escapedText) {  
+  const urlRegex = /(https?:\/\/[^\s<]+)/g;  
+  
+  return escapedText.replace(urlRegex, (url) => {  
+    let cleanUrl = url;  
+    let trailing = "";  
+  
+    // 文末の句読点や括弧を雑に除去  
+    while (/[),.!?]$/.test(cleanUrl)) {  
+      trailing = cleanUrl.slice(-1) + trailing;  
+      cleanUrl = cleanUrl.slice(0, -1);  
+    }  
+  
+    return `<a href="${cleanUrl}" target="_blank" rel="noopener noreferrer">${cleanUrl}</a>${trailing}`;  
+  });  
+}  
+  
+function stripCitationMarkers(text) {  
+  let s = String(text || "");  
+  s = s.replace(/$\d+:\d+†source$/g, "");  
+  s = s.replace(/【\d+:\d+†source】/g, "");  
+  s = s.replace(/[ \t]+/g, " ");  
+  s = s.replace(/\n[ \t]+/g, "\n");  
+  return s.trim();  
+}  
+  
+function formatAssistantText(text, options = {}) {  
+  const {  
+    removeCitations = true,  
+    markdown = true  
+  } = options;  
+  
+  let s = String(text || "");  
+  
+  if (removeCitations) {  
+    s = stripCitationMarkers(s);  
+  }  
+  
+  if (markdown && window.marked && window.DOMPurify) {  
+    marked.setOptions({  
+      breaks: true,  
+      gfm: true  
+    });  
+  
+    const rawHtml = marked.parse(s);  
+    return DOMPurify.sanitize(rawHtml);  
+  }  
+  
+  // フォールバック  
+  return escapeHtml(s).replaceAll("\n", "<br>");  
+}  
+
+
+function isAbsoluteHttpUrl(value) {  
+  const s = String(value || "").trim();  
+  return /^https?:\/\/.+/i.test(s);  
+}  
+  
+function renderSafeLinkOrText(value) {  
+  const s = String(value || "").trim();  
+  if (!s) return "";  
+  
+  if (isAbsoluteHttpUrl(s)) {  
+    const safe = escapeHtml(s);  
+    return `<a href="${safe}" target="_blank" rel="noopener noreferrer">${safe}</a>`;  
+  }  
+  
+  return `<span>${escapeHtml(s)}</span>`;  
+}  
+
   
 /* Events */  
 if (clearDebugInputBtn) {  
@@ -1165,7 +1284,7 @@ if (startConversationBtn) {
 }  
   
 if (pauseConversationBtn) {  
-  pauseConversationBtn.addEventListener("click", pauseConversation);  
+  pauseConversationBtn.addEventListener("click", togglePauseResumeConversation);  
 }  
   
 if (stopConversationBtn) {  
