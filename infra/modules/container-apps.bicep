@@ -165,6 +165,11 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
           }
           env: [
             { name: 'STORAGE_ACCOUNT_NAME', value: dataStorageAccountName }
+            { name: 'HISTORY_STORAGE_MODE', value: 'blob' }
+            { name: 'PROMPT_STORAGE_MODE', value: 'blob' }
+            { name: 'PROMPT_CONTAINER_NAME', value: 'prompt-container' }
+            { name: 'HISTORY_CONTAINER_NAME', value: 'history-container' }
+            { name: 'HISTORY_BLOB_NAME', value: 'history.json' }
             { name: 'CONTAINER_INPUT', value: 'input' }
             { name: 'CONTAINER_OUTPUT', value: 'output' }
             { name: 'CONTAINER_PROCESSED', value: 'processed' }

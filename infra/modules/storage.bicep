@@ -92,6 +92,16 @@ resource containerChunk 'Microsoft.Storage/storageAccounts/blobServices/containe
   properties: { publicAccess: 'None' }
 }
 
+resource containerPrompts 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  name: '${dataStorage.name}/default/prompt-container'
+  properties: { publicAccess: 'None' }
+}
+
+resource containerMeetingHistory 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  name: '${dataStorage.name}/default/history-container'
+  properties: { publicAccess: 'None' }
+}
+
 // Event Grid 用 Storage Queue（ARM 経由で作成 — 閉域対応）
 resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-05-01' = {
   parent: dataStorage

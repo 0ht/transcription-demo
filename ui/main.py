@@ -1,8 +1,9 @@
 import uuid  
+from pathlib import Path
 from typing import Dict, Optional  
   
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, UploadFile, File   
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response   
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response   
 from fastapi.staticfiles import StaticFiles  
 from pydantic import BaseModel  
 from starlette.concurrency import run_in_threadpool
@@ -43,6 +44,14 @@ app = FastAPI()
   
 app.mount("/static", StaticFiles(directory="static"), name="static")  
 templates = Jinja2Templates(directory="templates")  
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return FileResponse(
+        Path(__file__).resolve().parent / "static" / "favicon.ico",
+        media_type="image/vnd.microsoft.icon",
+    )
   
   
 class AnalyzeRequest(BaseModel):  
@@ -194,6 +203,9 @@ async def websocket_audio_ingest(websocket: WebSocket, session_id: str):
   
         while True:  
             message = await websocket.receive()  
+
+            if message["type"] == "websocket.disconnect":
+                break
   
             if "bytes" in message and message["bytes"] is not None:  
                 chunk = message["bytes"]  
