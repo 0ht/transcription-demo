@@ -218,9 +218,65 @@ function renderRagResult(data) {
   }  
 }  
   
+async function uploadDocumentFile() {  
+  const fileInput = document.getElementById("uploadFileInput");  
+  const uploadBtn = document.getElementById("uploadDocumentBtn");  
+  const uploadStatus = document.getElementById("uploadStatus");  
+  
+  const files = Array.from(fileInput?.files || []);  
+  if (!files.length) {  
+    alert("アップロードするファイルを選択してください");  
+    return;  
+  }  
+  
+  uploadBtn.disabled = true;  
+  uploadStatus.textContent = `アップロード中: ${files.length} ファイル`;  
+  setLoadingMessage(`ファイルをアップロード中... (${files.length}件)`);  
+  
+  try {  
+    const formData = new FormData();  
+    for (const file of files) {  
+      formData.append("files", file);  
+    }  
+  
+    const data = await fetchJSON("/api/documents/upload", {  
+      method: "POST",  
+      body: formData,  
+    });  
+  
+    const lines = [  
+      `アップロード完了: ${data.count || 0} 件`,  
+      "",  
+      ...(data.items || []).map(x => `- ${x.name} → ${x.uploaded}`),  
+      "",  
+      "Azure Functions により文字起こしが開始されます。完了後に一覧へ表示されます。"  
+    ];  
+  
+    uploadStatus.textContent = lines.join("\n");  
+    setLoadingMessage(`アップロード完了: ${data.count || 0} 件`);  
+  
+    fileInput.value = "";  
+  
+    setTimeout(() => {  
+      loadDocuments();  
+    }, 3000);  
+  } catch (e) {  
+    uploadStatus.textContent = `アップロード失敗: ${e.message}`;  
+    setLoadingMessage(`アップロード失敗: ${e.message}`);  
+    alert(e.message);  
+  } finally {  
+    uploadBtn.disabled = false;  
+  }  
+}  
+  
 document.getElementById("searchDocumentsBtn").addEventListener("click", loadDocuments);  
 document.getElementById("refreshDocumentsBtn").addEventListener("click", loadDocuments);  
 document.getElementById("runRagBtn").addEventListener("click", runDocumentRag);  
+  
+const uploadBtn = document.getElementById("uploadDocumentBtn");  
+if (uploadBtn) {  
+  uploadBtn.addEventListener("click", uploadDocumentFile);  
+}  
   
 document.getElementById("dateFrom").value = daysAgoStr(30);  
 document.getElementById("dateTo").value = todayStr();  

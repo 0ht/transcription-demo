@@ -43,7 +43,9 @@ def _build_filter(source_file: Optional[str] = None, transcript_path: Optional[s
     if source_file:  
         source_file_escaped = source_file.replace("'", "''")  
         filters.append(f"source_file eq '{source_file_escaped}'")  
-    # transcript_path はインデクサー投入では相対 blob パスを再現できないため絞り込みに使わない（source_file で一意）
+    if transcript_path:  
+        transcript_path_escaped = transcript_path.replace("'", "''")  
+        filters.append(f"transcript_path eq '{transcript_path_escaped}'")  
   
     if not filters:  
         return None  

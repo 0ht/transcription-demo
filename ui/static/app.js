@@ -1,4 +1,4 @@
-console.log("APP_JS_CHAT_LAYOUT_V0 LOADED");  
+console.log("APP_JS_CHAT_LAYOUT_V1 LOADED");  
   
 let currentSessionId = null;  
 let ws = null;  
@@ -57,7 +57,18 @@ const refreshHistoryBtn = document.getElementById("refreshHistoryBtn");
 const clearDebugInputBtn = document.getElementById("clearDebugInputBtn");  
   
 const analysisCardContainer = document.getElementById("analysisCardContainer");  
-  
+const modelSelect = document.getElementById("modelSelect");  
+
+const openPromptEditorBtn = document.getElementById("openPromptEditorBtn");  
+const createPromptBtn = document.getElementById("createPromptBtn");  
+const promptEditorModal = document.getElementById("promptEditorModal");  
+const promptEditorBackdrop = document.getElementById("promptEditorBackdrop");  
+const closePromptEditorBtn = document.getElementById("closePromptEditorBtn");  
+const promptEditorName = document.getElementById("promptEditorName");  
+const promptEditorContent = document.getElementById("promptEditorContent");  
+const promptEditorStatus = document.getElementById("promptEditorStatus");  
+const savePromptBtn = document.getElementById("savePromptBtn");  
+
 /* API */  
 async function apiGet(url) {  
   const res = await fetch(url);  
@@ -66,6 +77,20 @@ async function apiGet(url) {
     throw new Error(text);  
   }  
   return res.json();  
+} 
+
+
+async function apiPut(url, body) {  
+  const res = await fetch(url, {  
+    method: "PUT",  
+    headers: { "Content-Type": "application/json" },  
+    body: JSON.stringify(body),  
+  });  
+  const data = await res.json().catch(() => ({}));  
+  if (!res.ok) {  
+    throw new Error(data.detail || `PUT ${url} failed`);  
+  }  
+  return data;  
 }  
   
 async function apiPost(url, body = null) {  
@@ -686,9 +711,10 @@ async function analyzeWithOptionalUserPrompt(userPrompt = "") {
     const prompt_set_name = promptSetSelect.value;  
     const data = await apiPost(`/api/session/${currentSessionId}/analyze`, {  
       prompt_set_name,  
+      model_name: modelSelect.value,  
       user_instruction: userPrompt || ""  
     });  
-  
+      
     showAnalysisCard(data);  
   
     if (userPrompt && userPrompt.trim()) {  
@@ -736,6 +762,7 @@ async function sendChat() {
       const data = await apiPost(`/api/history/${viewingHistoryItemId}/chat`, {  
         message: text,  
         prompt_set_name: promptSetSelect.value,  
+        model_name: modelSelect.value,  
         use_rag: true,  
         context_mode: "history",  
         topic_id: viewingHistoryItemId  
@@ -762,6 +789,7 @@ async function sendChat() {
     if (!latestAnalysisData) {  
       const analysisData = await apiPost(`/api/session/${currentSessionId}/analyze`, {  
         prompt_set_name: promptSetSelect.value,  
+        model_name: modelSelect.value,  
         user_instruction: text  
       });  
 
@@ -786,10 +814,11 @@ async function sendChat() {
     const payload = {  
       message: text,  
       prompt_set_name: promptSetSelect.value,  
+      model_name: modelSelect.value,  
       use_rag: true,  
       context_mode: "current_transcript",  
       topic_id: null  
-    };  
+    };   
   
     const data = await apiPost(`/api/session/${currentSessionId}/chat`, payload);  
   
@@ -840,7 +869,8 @@ async function confirmCurrent() {
   
     const prompt_set_name = promptSetSelect.value;  
     const data = await apiPost(`/api/session/${currentSessionId}/confirm`, {  
-      prompt_set_name  
+      prompt_set_name,  
+      model_name: modelSelect.value  
     });  
   
     await refreshHistory();  
@@ -1340,3 +1370,135 @@ window.addEventListener("load", async () => {
   renderChatMessages();  
   updateButtonStates();  
 });  
+
+
+//モーダル系
+
+function openPromptEditorModal() {  
+  promptEditorModal.classList.remove("hidden");  
+}  
+  
+function closePromptEditorModal() {  
+  promptEditorModal.classList.add("hidden");  
+  promptEditorStatus.textContent = "";  
+}  
+
+
+async function reloadPromptSetOptions(selectedName = "") {  
+  const data = await apiGet("/api/prompt_sets");  
+  const items = data.items || [];  
+  
+  promptSetSelect.innerHTML = "";  
+  
+  for (const name of items) {  
+    const opt = document.createElement("option");  
+    opt.value = name;  
+    opt.textContent = name;  
+    if (selectedName && name === selectedName) {  
+      opt.selected = true;  
+    }  
+    promptSetSelect.appendChild(opt);  
+  }  
+  
+  if (!selectedName && items.length > 0) {  
+    promptSetSelect.value = items[0];  
+  }  
+}  
+
+
+async function openExistingPromptEditor() {  
+  const name = promptSetSelect.value;  
+  if (!name) {  
+    alert("プロンプトが選択されていません。");  
+    return;  
+  }  
+  
+  promptEditorStatus.textContent = "読み込み中...";  
+  promptEditorName.value = name;  
+  promptEditorName.readOnly = true;  
+  promptEditorContent.value = "";  
+  openPromptEditorModal();  
+  
+  try {  
+    const data = await apiGet(`/api/prompt_sets/${encodeURIComponent(name)}`);  
+    promptEditorName.value = data.name || name;  
+    promptEditorContent.value = data.content || "";  
+    promptEditorStatus.textContent = "";  
+  } catch (err) {  
+    promptEditorStatus.textContent = "";  
+    alert(`プロンプトの読み込みに失敗しました: ${err.message}`);  
+  }  
+}  
+
+
+function openCreatePromptEditor() {  
+  promptEditorName.value = "";  
+  promptEditorName.readOnly = false;  
+  promptEditorContent.value = "";  
+  promptEditorStatus.textContent = "新しいプロンプトを作成します。";  
+  openPromptEditorModal();  
+}  
+
+
+async function savePromptEditor() {  
+  const name = promptEditorName.value.trim();  
+  const content = promptEditorContent.value;  
+  
+  if (!name) {  
+    alert("プロンプト名を入力してください。");  
+    return;  
+  }  
+  
+  if (!content.trim()) {  
+    alert("プロンプト内容を入力してください。");  
+    return;  
+  }  
+  
+  savePromptBtn.disabled = true;  
+  promptEditorStatus.textContent = "保存中...";  
+  
+  try {  
+    if (promptEditorName.readOnly) {  
+      await apiPut(`/api/prompt_sets/${encodeURIComponent(name)}`, {  
+        content,  
+      });  
+    } else {  
+      await apiPost("/api/prompt_sets", {  
+        name,  
+        content,  
+      });  
+    }  
+  
+    await reloadPromptSetOptions(name);  
+    promptSetSelect.value = name;  
+  
+    promptEditorName.readOnly = true;  
+    promptEditorStatus.textContent = "保存しました。";  
+  } catch (err) {  
+    promptEditorStatus.textContent = "";  
+    alert(`保存に失敗しました: ${err.message}`);  
+  } finally {  
+    savePromptBtn.disabled = false;  
+  }  
+}  
+
+
+if (openPromptEditorBtn) {  
+  openPromptEditorBtn.addEventListener("click", openExistingPromptEditor);  
+}  
+  
+if (createPromptBtn) {  
+  createPromptBtn.addEventListener("click", openCreatePromptEditor);  
+}  
+  
+if (closePromptEditorBtn) {  
+  closePromptEditorBtn.addEventListener("click", closePromptEditorModal);  
+}  
+  
+if (promptEditorBackdrop) {  
+  promptEditorBackdrop.addEventListener("click", closePromptEditorModal);  
+}  
+  
+if (savePromptBtn) {  
+  savePromptBtn.addEventListener("click", savePromptEditor);  
+}  

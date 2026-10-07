@@ -48,14 +48,14 @@ class RealtimeMeetingSession:
         async with self.lock:  
             self.transcript_events.append(payload)  
   
-    async def _append_partial_transcript(self, text: str):  
+    async def _set_partial_transcript(self, text: str):  
         async with self.lock:  
-            self.partial_transcript += text or ""  
+            self.partial_transcript = (text or "").strip()  
   
     async def _clear_partial_transcript(self):  
         async with self.lock:  
             self.partial_transcript = ""  
-
+  
     async def get_partial_transcript(self) -> str:  
         async with self.lock:  
             return self.partial_transcript  
@@ -85,7 +85,8 @@ class RealtimeMeetingSession:
                     "audio": {  
                         "input": {  
                             "transcription": {  
-                                "model": whisper_model,  
+                                "model": whisper_model,
+                                "language":"ja"
                             },  
                             "format": {  
                                 "type": "audio/pcm",  
@@ -222,8 +223,9 @@ class RealtimeMeetingSession:
                     "response.output_audio_transcript.delta",  
                 }:  
                     delta = getattr(event, "delta", "") or ""  
+                    delta = delta.strip()  
                     if delta:  
-                        await self._append_partial_transcript(delta)  
+                        await self._set_partial_transcript(delta)  
   
                 # final  
                 elif event_type in {  

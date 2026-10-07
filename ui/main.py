@@ -1,9 +1,11 @@
+import os  
+import json  
+import base64 
 import uuid  
-from pathlib import Path
-from typing import Dict, Optional  
+from typing import Dict, Optional,List
   
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, UploadFile, File   
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response   
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response   
 from fastapi.staticfiles import StaticFiles  
 from pydantic import BaseModel  
 from starlette.concurrency import run_in_threadpool
@@ -15,7 +17,7 @@ from modules.storage import load_history, save_history
 from modules.query_planner import plan_meeting_topic  
 from modules.ai_search import search_documents  
 from modules.llm import generate_meeting_feedback, generate_chat_response  
-from modules.prompt_store import list_prompt_sets  
+from modules.prompt_store import list_prompt_sets, save_prompt_set, get_prompt_set, delete_prompt_set
 from modules.chat_retrieval import decide_retrieval, merge_docs  
 
 import datetime
@@ -30,14 +32,23 @@ delete_uploaded_file,
 delete_ocr_result
 )
 
-
 from modules.blob_document_service import (  
     list_transcripts,  
     get_document_detail,  
     load_media,  
+    upload_source_file
 )  
 from modules.document_rag_service import rag_answer_for_document  
 
+from modules.config import list_available_llm_models, get_default_llm_model  
+
+from modules.auth import (  
+    get_user_context,  
+    get_user_context_from_websocket,  
+    require_admin,  
+    require_user_or_admin,  
+    resolve_prompt_and_model_for_request,  
+)  
 
 
 app = FastAPI()  
@@ -46,30 +57,50 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")  
 
 
-@app.get("/favicon.ico", include_in_schema=False)
-async def favicon():
-    return FileResponse(
-        Path(__file__).resolve().parent / "static" / "favicon.ico",
-        media_type="image/vnd.microsoft.icon",
-    )
-  
-  
+"""
+#TODO:検証用グループ設定を環境変数に入れる
+TEST_GROUP = admin user 空白
+
+# ヘッダー情報取得
+def get_user_group():
+    #TODO:ヘッダー取得
+    return user_address, group
+"""
+
+
+
+
+# group は閲覧者、管理者２つを用意
+# 閲覧者 
+## TOPのみ見せる
+
+# 管理者
+## 全ページOK
+
+# それ以外
+## topページでアクセス許可なしメッセージ表示
+
+
+
 class AnalyzeRequest(BaseModel):  
     prompt_set_name: str = "default"  
+    model_name: str = get_default_llm_model()  
     user_instruction: str = ""  
-  
   
 class ConfirmRequest(BaseModel):  
     prompt_set_name: str = "default"  
-  
+    model_name: str = get_default_llm_model()  
+
   
 class DebugTextRequest(BaseModel):  
     text: str  
   
-  
+
+
 class ChatRequest(BaseModel):  
     message: str  
     prompt_set_name: str = "default"  
+    model_name: str = get_default_llm_model()  
     use_rag: bool = True  
     context_mode: str = "current_transcript"  # "current_transcript" or "history"  
     topic_id: Optional[str] = None  
@@ -78,6 +109,7 @@ class DocumentChatRequest(BaseModel):
     transcript_path: str  
     message: str  
     prompt_set_name: str = "default"  
+    model_name: str = get_default_llm_model()  
     search_mode: str = "semantic_hybrid"  
     top_k: int = 5  
     use_query_rewrite: bool = True  
@@ -89,14 +121,21 @@ meeting_managers: Dict[str, MeetingManager] = {}
   
 # 履歴は全体共有  
 history_store = load_history()  
-  
+
+
+
 
 def serialize_blob_dt(dt):  
     return dt.isoformat() if dt else None  
 
+
 def validate_prompt_set_or_400(prompt_set_name: str):  
     if prompt_set_name not in list_prompt_sets():  
         raise HTTPException(status_code=400, detail="invalid prompt_set_name")  
+
+def validate_model_name_or_400(model_name: str):  
+    if model_name not in list_available_llm_models():  
+        raise HTTPException(status_code=400, detail="invalid model_name")  
   
   
 def get_session_or_404(session_id: str) -> RealtimeMeetingSession:  
@@ -132,22 +171,48 @@ def get_history_item_by_topic_id(topic_id: str):
         if str(item.get("topic_id")) == str(topic_id):  
             return item  
     return None  
-  
+
+
+
+
   
 @app.get("/", response_class=HTMLResponse)  
 async def index(request: Request):  
+    user = get_user_context(request)  
+  
+    prompt_sets = list_prompt_sets() if user.is_admin else ["default"]  
+    model_options = list_available_llm_models() if user.is_admin else [get_default_llm_model()]  
+  
     return templates.TemplateResponse(  
         request=request,  
         name="index.html",  
         context={  
             "request": request,  
-            "prompt_sets": list_prompt_sets(),  
+            "user_name": user.user_name,  
+            "user_email": user.user_email,  
+            "user_group": user.group,  
+            "auth_source": user.auth_source,  
+            "is_admin": user.is_admin,  
+            "is_user": user.is_user,  
+            "is_authorized": user.is_authorized,  
+            "prompt_sets": prompt_sets,  
+            "model_options": model_options,  
+            "default_model": get_default_llm_model(),  
         },  
     )  
-  
+
+
+@app.get("/api/models")  
+async def get_models(request: Request):  
+    require_admin(request)  
+    return {  
+        "models": list_available_llm_models(),  
+        "default": get_default_llm_model(),  
+    }  
   
 @app.post("/api/session/start")  
-async def start_session():  
+async def start_session(request: Request):  
+    require_user_or_admin(request)  
     session_id = str(uuid.uuid4())  
     session = RealtimeMeetingSession(session_id=session_id)  
   
@@ -168,7 +233,8 @@ async def start_session():
   
   
 @app.post("/api/session/{session_id}/stop")  
-async def stop_session(session_id: str):  
+async def stop_session(session_id: str, request: Request):  
+    require_user_or_admin(request) 
     session = get_session_or_404(session_id)  
   
     try:  
@@ -183,7 +249,12 @@ async def stop_session(session_id: str):
 @app.websocket("/ws/audio/{session_id}")  
 async def websocket_audio_ingest(websocket: WebSocket, session_id: str):  
     print(f"[ws] connect requested: {session_id}")  
-  
+
+    user = get_user_context_from_websocket(websocket)  
+    if not user.is_authorized:  
+        await websocket.close(code=4403, reason="forbidden")  
+        return  
+
     session = sessions.get(session_id)  
     if not session:  
         print(f"[ws] session not found: {session_id}")  
@@ -203,9 +274,6 @@ async def websocket_audio_ingest(websocket: WebSocket, session_id: str):
   
         while True:  
             message = await websocket.receive()  
-
-            if message["type"] == "websocket.disconnect":
-                break
   
             if "bytes" in message and message["bytes"] is not None:  
                 chunk = message["bytes"]  
@@ -253,7 +321,8 @@ async def websocket_audio_ingest(websocket: WebSocket, session_id: str):
   
   
 @app.get("/api/session/{session_id}/transcript")  
-async def get_transcript(session_id: str):  
+async def get_transcript(session_id: str, request: Request):  
+    require_user_or_admin(request)   
     session = get_session_or_404(session_id)  
     manager = get_manager_or_404(session_id)  
   
@@ -279,11 +348,23 @@ async def get_transcript(session_id: str):
         "current_suggestions": manager.current_suggestions,  
         "current_next_actions": manager.current_next_actions,  
     }  
-  
+
+
+
+
   
 @app.post("/api/session/{session_id}/analyze")  
-async def analyze_session(session_id: str, req: AnalyzeRequest):  
-    validate_prompt_set_or_400(req.prompt_set_name)  
+async def analyze_session(session_id: str, req: AnalyzeRequest, request: Request): 
+    require_user_or_admin(request)  
+  
+    prompt_set_name, model_name = resolve_prompt_and_model_for_request(  
+        request,  
+        req.prompt_set_name,  
+        req.model_name,  
+        validate_prompt_set_or_400,  
+        validate_model_name_or_400,  
+        get_default_llm_model,  
+    )  
   
     session = get_session_or_404(session_id)  
     manager = get_manager_or_404(session_id)  
@@ -295,7 +376,11 @@ async def analyze_session(session_id: str, req: AnalyzeRequest):
         raise HTTPException(status_code=400, detail="No transcript to analyze")  
   
     try:  
-        plan = await run_in_threadpool(plan_meeting_topic, conversation)  
+        plan = await run_in_threadpool(  
+            plan_meeting_topic,  
+            conversation,  
+            model_name,  
+        )  
   
         docs = []  
         if plan.get("use_rag") and plan.get("search_query"):  
@@ -310,7 +395,8 @@ async def analyze_session(session_id: str, req: AnalyzeRequest):
             plan.get("summary", ""),  
             conversation,  
             docs,  
-            req.prompt_set_name,  
+            prompt_set_name,  
+            model_name,  
             plan.get("issues", []),  
             plan.get("suggestions", []),  
             plan.get("next_actions", []),  
@@ -339,17 +425,25 @@ async def analyze_session(session_id: str, req: AnalyzeRequest):
             "suggestions": manager.current_suggestions,  
             "next_actions": manager.current_next_actions,  
         }  
-  
     except Exception as e:  
         raise HTTPException(status_code=500, detail=f"Analyze failed: {str(e)}")  
-
+    
 
   
 @app.post("/api/session/{session_id}/confirm")  
-async def confirm_session(session_id: str, req: ConfirmRequest):  
+async def confirm_session(session_id: str, req: ConfirmRequest, request: Request):
     global history_store  
   
-    validate_prompt_set_or_400(req.prompt_set_name)  
+    require_user_or_admin(request)  
+  
+    prompt_set_name, model_name = resolve_prompt_and_model_for_request(  
+        request,  
+        req.prompt_set_name,  
+        req.model_name,  
+        validate_prompt_set_or_400,  
+        validate_model_name_or_400,  
+        get_default_llm_model,  
+    ) 
   
     session = get_session_or_404(session_id)  
     manager = get_manager_or_404(session_id)  
@@ -361,7 +455,7 @@ async def confirm_session(session_id: str, req: ConfirmRequest):
         raise HTTPException(status_code=400, detail="No transcript to confirm")  
   
     try:  
-        item = manager.confirm_topic(prompt_set=req.prompt_set_name)  
+        item = manager.confirm_topic(prompt_set=prompt_set_name)  
   
         history_store.insert(0, item)  
         await run_in_threadpool(save_history, history_store)  
@@ -377,7 +471,8 @@ async def confirm_session(session_id: str, req: ConfirmRequest):
   
   
 @app.post("/api/session/{session_id}/clear")  
-async def clear_session(session_id: str):  
+async def clear_session(session_id: str, request: Request):  
+    require_user_or_admin(request)  
     session = get_session_or_404(session_id)  
     manager = get_manager_or_404(session_id)  
   
@@ -390,12 +485,14 @@ async def clear_session(session_id: str):
   
   
 @app.get("/api/history")  
-async def get_history():  
+async def get_history(request: Request):  
+    require_user_or_admin(request)  
     return {"items": history_store}  
   
   
 @app.get("/api/history/{topic_id}")  
-async def get_history_item(topic_id: str):  
+async def get_history_item(topic_id: str, request: Request):  
+    require_user_or_admin(request)  
     item = get_history_item_by_topic_id(topic_id)  
     if not item:  
         raise HTTPException(status_code=404, detail="not found")  
@@ -415,12 +512,15 @@ async def get_history_item(topic_id: str):
   
   
 @app.get("/api/prompt_sets")  
-async def get_prompt_sets():  
-    return {"prompt_sets": list_prompt_sets()}  
-  
+async def api_list_prompt_sets(request: Request):  
+    require_admin(request)  
+    return {"items": list_prompt_sets()} 
+
+
   
 @app.post("/api/session/{session_id}/debug_text")  
-async def add_debug_text(session_id: str, req: DebugTextRequest):  
+async def add_debug_text(session_id: str, req: DebugTextRequest, request: Request):  
+    require_user_or_admin(request) 
     session = sessions.get(session_id)  
     if not session:  
         raise HTTPException(status_code=404, detail="session not found")  
@@ -434,11 +534,19 @@ async def add_debug_text(session_id: str, req: DebugTextRequest):
   
   
 @app.post("/api/session/{session_id}/chat")  
-async def chat_with_meeting(session_id: str, req: ChatRequest):  
+async def chat_with_meeting(session_id: str, req: ChatRequest, request: Request):  
+    require_user_or_admin(request)   
     session = get_session_or_404(session_id)  
     manager = get_manager_or_404(session_id)  
   
-    validate_prompt_set_or_400(req.prompt_set_name)  
+    prompt_set_name, model_name = resolve_prompt_and_model_for_request(  
+        request,  
+        req.prompt_set_name,  
+        req.model_name,  
+        validate_prompt_set_or_400,  
+        validate_model_name_or_400,  
+        get_default_llm_model,  
+    )  
   
     user_message = (req.message or "").strip()  
     if not user_message:  
@@ -482,7 +590,6 @@ async def chat_with_meeting(session_id: str, req: ChatRequest):
             docs = item.get("retrieved_docs", []) or []  
   
             manager.set_chat_context(mode="history", topic_id=req.topic_id)  
-  
         else:  
             raise HTTPException(status_code=400, detail="invalid context_mode")  
   
@@ -498,6 +605,7 @@ async def chat_with_meeting(session_id: str, req: ChatRequest):
                 history_before,  
                 user_message,  
                 base_docs,  
+                model_name,  
             )  
   
             need_search = bool(decision.get("need_search", False))  
@@ -520,7 +628,8 @@ async def chat_with_meeting(session_id: str, req: ChatRequest):
             user_message,  
             history_before,  
             docs,  
-            req.prompt_set_name,  
+            prompt_set_name,  
+            model_name,  
             context_title,  
             context_summary,  
         )  
@@ -540,17 +649,15 @@ async def chat_with_meeting(session_id: str, req: ChatRequest):
             "need_search": need_search,  
             "retrieval_reason": retrieval_reason,  
         }  
-  
     except HTTPException:  
         raise  
     except Exception as e:  
         raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")  
-    
-
-  
+          
   
 @app.post("/api/session/{session_id}/chat/clear")  
-async def clear_chat(session_id: str):  
+async def clear_chat(session_id: str, request: Request):  
+    require_user_or_admin(request)  
     manager = get_manager_or_404(session_id)  
     manager.clear_chat()  
     manager.reset_chat_context()  
@@ -558,7 +665,8 @@ async def clear_chat(session_id: str):
   
   
 @app.post("/api/session/{session_id}/chat/load_history/{topic_id}")  
-async def load_history_into_chat(session_id: str, topic_id: str):  
+async def load_history_into_chat(session_id: str, topic_id: str, request: Request):  
+    require_user_or_admin(request)  
     manager = get_manager_or_404(session_id)  
   
     item = get_history_item_by_topic_id(topic_id)  
@@ -588,8 +696,17 @@ async def load_history_into_chat(session_id: str, topic_id: str):
   
 
 @app.post("/api/history/{topic_id}/chat")  
-async def chat_with_history(topic_id: str, req: ChatRequest):  
-    validate_prompt_set_or_400(req.prompt_set_name)  
+async def chat_with_history(topic_id: str, req: ChatRequest, request: Request):  
+    require_user_or_admin(request)  
+  
+    prompt_set_name, model_name = resolve_prompt_and_model_for_request(  
+        request,  
+        req.prompt_set_name,  
+        req.model_name,  
+        validate_prompt_set_or_400,  
+        validate_model_name_or_400,  
+        get_default_llm_model,  
+    )
   
     user_message = (req.message or "").strip()  
     if not user_message:  
@@ -614,9 +731,10 @@ async def chat_with_history(topic_id: str, req: ChatRequest):
                 context_title,  
                 context_summary,  
                 context_text,  
-                [],   # sessionless なのでサーバ側会話履歴なし  
+                [],  
                 user_message,  
                 docs,  
+                model_name,  
             )  
   
             need_search = bool(decision.get("need_search", False))  
@@ -637,7 +755,8 @@ async def chat_with_history(topic_id: str, req: ChatRequest):
             user_message,  
             [],  
             docs,  
-            req.prompt_set_name,  
+            prompt_set_name,  
+            model_name,  
             context_title,  
             context_summary,  
         )  
@@ -652,11 +771,10 @@ async def chat_with_history(topic_id: str, req: ChatRequest):
             "need_search": need_search,  
             "retrieval_reason": retrieval_reason,  
         }  
-  
     except Exception as e:  
         raise HTTPException(status_code=500, detail=f"History chat failed: {str(e)}")  
-
-
+    
+    
 
 @app.on_event("shutdown")  
 async def shutdown_event():  
@@ -672,6 +790,7 @@ async def shutdown_event():
 
 @app.get("/ocr", response_class=HTMLResponse)  
 async def ocr_page(request: Request):  
+    require_admin(request)  
     return templates.TemplateResponse(  
         request=request,  
         name="ocr.html",  
@@ -681,7 +800,8 @@ async def ocr_page(request: Request):
 
 
 @app.post("/api/ocr/upload")  
-async def upload_ocr_file(file: UploadFile = File(...)):  
+async def upload_ocr_file(request: Request, file: UploadFile = File(...)):  
+    require_admin(request)  
     data = await file.read()  
     saved_name = await run_in_threadpool(upload_file_to_ocr_input, file.filename, data)  
     return {"status": "ok", "file_name": saved_name}  
@@ -689,7 +809,8 @@ async def upload_ocr_file(file: UploadFile = File(...)):
 
 
 @app.get("/api/ocr/uploads")  
-async def get_ocr_uploads():  
+async def get_ocr_uploads(request: Request):  
+    require_admin(request) 
     items = await run_in_threadpool(list_uploaded_files)  
     return {"items": items}  
 
@@ -699,7 +820,8 @@ class OCRRunRequest(BaseModel):
     blob_name: str  
   
 @app.post("/api/ocr/run")  
-async def run_ocr(req: OCRRunRequest):  
+async def run_ocr(req: OCRRunRequest, request: Request):  
+    require_admin(request) 
     try:  
         result_blob = await run_in_threadpool(process_ocr_from_blob, req.blob_name)  
         return {"status": "ok", "result_blob_name": result_blob}  
@@ -709,7 +831,8 @@ async def run_ocr(req: OCRRunRequest):
 
 
 @app.get("/api/ocr/results")  
-async def get_ocr_results():  
+async def get_ocr_results(request: Request):  
+    require_admin(request)  
     items = await run_in_threadpool(list_ocr_results)  
     return {"items": items}  
 
@@ -717,7 +840,8 @@ async def get_ocr_results():
 
   
 @app.get("/api/ocr/result/{blob_name}")  
-async def get_ocr_result(blob_name: str):  
+async def get_ocr_result(blob_name: str, request: Request):  
+    require_admin(request)  
     try:  
         text = await run_in_threadpool(load_ocr_result_text, blob_name)  
         return {  
@@ -730,7 +854,8 @@ async def get_ocr_result(blob_name: str):
  
   
 @app.delete("/api/ocr/upload/{blob_name}")  
-async def delete_ocr_upload(blob_name: str):  
+async def delete_ocr_upload(blob_name: str, request: Request):  
+    require_admin(request)  
     try:  
         await run_in_threadpool(delete_uploaded_file, blob_name)  
         return {"status": "deleted", "name": blob_name}  
@@ -741,7 +866,8 @@ async def delete_ocr_upload(blob_name: str):
 
   
 @app.delete("/api/ocr/result/{blob_name}")  
-async def delete_ocr_result_api(blob_name: str):  
+async def delete_ocr_result_api(blob_name: str, request: Request):  
+    require_admin(request)  
     try:  
         await run_in_threadpool(delete_ocr_result, blob_name)  
         return {"status": "deleted", "name": blob_name}  
@@ -765,6 +891,7 @@ async def download_ocr_result(blob_name: str):
 
 @app.get("/documents", response_class=HTMLResponse)  
 async def documents_page(request: Request):  
+    require_admin(request)  
     return templates.TemplateResponse(  
         request=request,  
         name="documents.html",  
@@ -774,11 +901,13 @@ async def documents_page(request: Request):
     )  
 
 @app.get("/api/documents")  
-async def api_documents(  
+async def api_documents(
+    request: Request,  
     date_from: Optional[str] = None,  
     date_to: Optional[str] = None,  
     keyword: str = "",  
 ):  
+    require_admin(request) 
     try:  
         parsed_date_from = datetime.date.fromisoformat(date_from) if date_from else None  
         parsed_date_to = datetime.date.fromisoformat(date_to) if date_to else None  
@@ -808,8 +937,44 @@ async def api_documents(
         raise HTTPException(status_code=500, detail=f"documents list failed: {str(e)}")  
     
 
+@app.post("/api/documents/upload")  
+async def api_document_upload(request: Request, files: List[UploadFile] = File(...)):  
+    require_admin(request)  
+    try:  
+        if not files:  
+            raise HTTPException(status_code=400, detail="no files")  
+  
+        uploaded = []  
+  
+        for file in files:  
+            data = await file.read()  
+            if not data:  
+                continue  
+  
+            saved_path = await run_in_threadpool(upload_source_file, file.filename, data)  
+            uploaded.append({  
+                "name": file.filename,  
+                "uploaded": saved_path,  
+            })  
+  
+        if not uploaded:  
+            raise HTTPException(status_code=400, detail="all files are empty")  
+  
+        return {  
+            "status": "ok",  
+            "count": len(uploaded),  
+            "items": uploaded,  
+            "message": "アップロードしました。文字起こし処理はバックグラウンドで実行されます。",  
+        }  
+    except HTTPException:  
+        raise  
+    except Exception as e:  
+        raise HTTPException(status_code=500, detail=f"upload failed: {str(e)}")  
+    
+
 @app.get("/api/documents/detail")  
-async def api_document_detail(transcript_path: str):  
+async def api_document_detail(request: Request, transcript_path: str):  
+    require_admin(request) 
     if not transcript_path:  
         raise HTTPException(status_code=400, detail="transcript_path is required")  
   
@@ -833,7 +998,8 @@ async def api_document_detail(transcript_path: str):
 
 
 @app.get("/api/documents/download/json")  
-async def api_document_download_json(transcript_path: str):  
+async def api_document_download_json(request: Request, transcript_path: str):  
+    require_admin(request)  
     try:  
         detail = await run_in_threadpool(get_document_detail, transcript_path)  
         import json  
@@ -849,7 +1015,8 @@ async def api_document_download_json(transcript_path: str):
     
 
 @app.get("/api/documents/download/text")  
-async def api_document_download_text(transcript_path: str):  
+async def api_document_download_text(request: Request, transcript_path: str):  
+    require_admin(request)     
     try:  
         detail = await run_in_threadpool(get_document_detail, transcript_path)  
         filename = transcript_path.split("/")[-1].replace("_transcript.json", "_transcript.txt")  
@@ -863,7 +1030,8 @@ async def api_document_download_text(transcript_path: str):
     
 
 @app.get("/api/documents/media")  
-async def api_document_media(media_path: str):  
+async def api_document_media(request: Request, media_path: str):  
+    require_admin(request) 
     if not media_path:  
         raise HTTPException(status_code=400, detail="media_path is required")  
   
@@ -890,9 +1058,13 @@ async def api_document_media(media_path: str):
     
 
 @app.post("/api/documents/chat")  
-async def api_document_chat(req: DocumentChatRequest):  
+async def api_document_chat(request: Request, req: DocumentChatRequest):  
+    require_admin(request) 
     transcript_path = (req.transcript_path or "").strip()  
     message = (req.message or "").strip()  
+  
+    validate_model_name_or_400(req.model_name)  
+    validate_prompt_set_or_400(req.prompt_set_name)  # 将来使うなら  
   
     if not transcript_path:  
         raise HTTPException(status_code=400, detail="transcript_path is required")  
@@ -911,6 +1083,7 @@ async def api_document_chat(req: DocumentChatRequest):
             req.use_query_rewrite,  
             detail["source_file"],  
             transcript_path,  
+            req.model_name,  
         )  
   
         return {  
@@ -923,3 +1096,77 @@ async def api_document_chat(req: DocumentChatRequest):
         }  
     except Exception as e:  
         raise HTTPException(status_code=500, detail=f"document chat failed: {str(e)}")  
+
+
+
+###ここからプロンプト編集系###
+
+class PromptSetSaveRequest(BaseModel):  
+    content: str  
+  
+
+class PromptSetCreateRequest(BaseModel):  
+    name: str  
+    content: str  
+
+
+@app.get("/api/prompt_sets/{prompt_set_name}")  
+async def api_get_prompt_set(prompt_set_name: str, request: Request):  
+    require_admin(request)  
+    try:  
+        text = await run_in_threadpool(get_prompt_set, prompt_set_name)  
+        return {  
+            "name": prompt_set_name,  
+            "content": text,  
+        }  
+    except Exception as e:  
+        raise HTTPException(status_code=500, detail=f"failed to load prompt: {str(e)}")  
+    
+
+
+
+@app.put("/api/prompt_sets/{prompt_set_name}")  
+async def api_save_prompt_set(prompt_set_name: str, req: PromptSetSaveRequest, request: Request):  
+    require_admin(request)  
+    try:  
+        saved_name = await run_in_threadpool(save_prompt_set, prompt_set_name, req.content)  
+        return {  
+            "status": "ok",  
+            "name": saved_name,  
+        }  
+    except ValueError as e:  
+        raise HTTPException(status_code=400, detail=str(e))  
+    except Exception as e:  
+        raise HTTPException(status_code=500, detail=f"failed to save prompt: {str(e)}")  
+    
+
+  
+@app.post("/api/prompt_sets")  
+async def api_create_prompt_set(req: PromptSetCreateRequest, request: Request):  
+    require_admin(request)  
+    try:  
+        saved_name = await run_in_threadpool(save_prompt_set, req.name, req.content)  
+        return {  
+            "status": "ok",  
+            "name": saved_name,  
+        }  
+    except ValueError as e:  
+        raise HTTPException(status_code=400, detail=str(e))  
+    except Exception as e:  
+        raise HTTPException(status_code=500, detail=f"failed to create prompt: {str(e)}")  
+    
+
+@app.delete("/api/prompt_sets/{prompt_set_name}")  
+async def api_delete_prompt_set(prompt_set_name: str, request: Request):  
+    require_admin(request)  
+    try:  
+        deleted = await run_in_threadpool(delete_prompt_set, prompt_set_name)  
+        return {  
+            "status": "ok",  
+            "deleted": deleted,  
+            "name": prompt_set_name,  
+        }  
+    except ValueError as e:  
+        raise HTTPException(status_code=400, detail=str(e))  
+    except Exception as e:  
+        raise HTTPException(status_code=500, detail=f"failed to delete prompt: {str(e)}")  

@@ -1,7 +1,6 @@
 # modules/ocr.py  
 import os  
 import datetime  
-import logging
 import tempfile  
 from pathlib import Path  
   
@@ -24,8 +23,6 @@ from modules.config import (
 OCR_SUPPORTED_EXTS = {  
     ".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"  
 }  
-
-logger = logging.getLogger(__name__)
   
 _blob_service_client = None  
 _adi_client = None  
@@ -116,7 +113,6 @@ def process_ocr_from_blob(blob_name: str) -> str:
   
     temp_file_path = None  
     try:  
-        logger.info("OCR started: blob=%s model=%s", blob_name, ADI_MODEL)
         suffix = os.path.splitext(blob_name)[1]  
   
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:  
@@ -147,19 +143,8 @@ def process_ocr_from_blob(blob_name: str) -> str:
             markdown_content.encode("utf-8"),  
             overwrite=True,  
         )  
-
-        logger.info(
-            "OCR completed: input_blob=%s result_blob=%s characters=%d",
-            blob_name,
-            output_blob_name,
-            len(markdown_content),
-        )
   
         return output_blob_name  
-
-    except Exception:
-        logger.exception("OCR failed: blob=%s", blob_name)
-        raise
   
     finally:  
         if temp_file_path and os.path.exists(temp_file_path):  

@@ -5,13 +5,7 @@ async function fetchJSON(url, options = {}) {
   const res = await fetch(url, options);  
   if (!res.ok) {  
     const text = await res.text();  
-    let message = text || `HTTP ${res.status}`;
-    try {
-      message = JSON.parse(text).detail || message;
-    } catch {
-      // The response is not JSON; use the original response text.
-    }
-    throw new Error(message);
+    throw new Error(text || `HTTP ${res.status}`);  
   }  
   return await res.json();  
 }  
@@ -36,15 +30,7 @@ async function loadUploads() {
       div.classList.add("active");  
   
       if (confirm(`OCRを実行しますか？\n${item.name}`)) {  
-        const originalText = div.textContent;
-        div.textContent = `OCR処理中: ${item.name}`;
-        try {
-          await runOCR(item.name);
-        } catch (error) {
-          alert(`OCR失敗: ${error.message}`);
-        } finally {
-          div.textContent = originalText;
-        }
+        await runOCR(item.name);  
       }  
     };  
     box.appendChild(div);  

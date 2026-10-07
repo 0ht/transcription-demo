@@ -25,6 +25,28 @@
     <aside class="left-sidebar" style="width:420px; min-width:420px;">  
       <div class="sidebar-section">  
         <div class="sidebar-section-header">  
+          <h2>ファイルアップロード</h2>  
+        </div>  
+        
+        <label for="uploadFileInput">音声 / 動画ファイル</label>  
+        <input  
+          id="uploadFileInput"  
+          type="file"  
+          multiple  
+          accept=".wav,.mp3,.m4a,.ogg,.flac,.wma,.mp4,.avi,.mov,.webm,.mkv"  
+        />  
+        <div class="button-row" style="margin-top: 12px;">  
+          <button id="uploadDocumentBtn">アップロード</button>  
+        </div>  
+        
+        <div id="uploadStatus" class="small" style="margin-top: 12px;">  
+          Blob Storage にアップロードすると、Azure Functions が文字起こしを開始します。  
+        </div>  
+      </div>  
+
+
+      <div class="sidebar-section">  
+        <div class="sidebar-section-header">  
           <h2>文書一覧</h2>  
         </div>  
   

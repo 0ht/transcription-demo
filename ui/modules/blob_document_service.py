@@ -154,3 +154,17 @@ def get_document_detail(transcript_path: str) -> dict:
         "is_audio": ext in AUDIO_EXTS,  
         "is_video": ext in VIDEO_EXTS,  
     }  
+
+
+
+  
+def upload_source_file(filename: str, data: bytes) -> str:  
+    svc = get_blob_service()  
+  
+    safe_name = os.path.basename(filename)  
+    now = datetime.utcnow()  
+    blob_name = f"{now.year:04d}/{now.month:02d}/{now.day:02d}/{safe_name}"  
+  
+    blob = svc.get_blob_client(CONTAINER_INPUT, blob_name)  
+    blob.upload_blob(data, overwrite=True)  
+    return blob_name  

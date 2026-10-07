@@ -20,11 +20,14 @@ def require_env(name: str) -> str:
     return value  
   
   
+def _parse_csv_env(value: str) -> list[str]:  
+    return [x.strip() for x in (value or "").split(",") if x.strip()]  
+  
+  
 # -----------------------------  
 # Azure credentials  
 # -----------------------------  
 credential = DefaultAzureCredential()  
-  
   
 # -----------------------------  
 # Azure OpenAI  
@@ -35,8 +38,34 @@ AOAI_KEY: Optional[str] = os.getenv("AOAI_KEY")
   
 aoai_model = require_env("AOAI_MODEL_NAME")  
 aoai_model_fast = os.getenv("AOAI_MODEL_NAME_FAST", aoai_model)  
+  
+# 追加: UI表示用の利用可能モデル一覧  
+_available_models_from_env = _parse_csv_env(os.getenv("AOAI_AVAILABLE_MODELS", ""))  
+AVAILABLE_LLM_MODELS = _available_models_from_env or [aoai_model, aoai_model_fast]  
+  
 realtime_model = require_env("REALTIME_MODEL")  
 whisper_model = os.getenv("WHISPER_MODEL", "whisper")  
+  
+  
+def list_available_llm_models() -> list[str]:  
+    seen = set()  
+    result = []  
+    for name in AVAILABLE_LLM_MODELS:  
+        if name and name not in seen:  
+            seen.add(name)  
+            result.append(name)  
+  
+    # 念のため既定モデル群も落ちないよう補完  
+    for name in [aoai_model, aoai_model_fast]:  
+        if name and name not in seen:  
+            seen.add(name)  
+            result.append(name)  
+  
+    return result  
+  
+  
+def get_default_llm_model() -> str:  
+    return aoai_model  
   
   
 def _get_cognitive_token_provider():  
@@ -173,3 +202,8 @@ def get_blob_client(container_name: str, blob_name: str):
     container = get_blob_container_client(container_name)  
     return container.get_blob_client(blob_name)  
 
+
+# グループ設定
+TEST_GROUP = os.getenv("TEST_GROUP", "").strip().lower()  # admin / user / ""  
+ADMIN_GROUP_ID = os.getenv("ADMIN_GROUP_ID", "").strip()  
+USER_GROUP_ID = os.getenv("USER_GROUP_ID", "").strip()  
