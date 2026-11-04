@@ -2,10 +2,14 @@
 import os  
 import datetime  
 import tempfile  
+import logging
+import re
+import uuid
 from pathlib import Path  
   
 from azure.storage.blob import BlobServiceClient  
 from azure.core.credentials import AzureKeyCredential  
+from azure.core.exceptions import ResourceModifiedError
 from azure.identity import DefaultAzureCredential  
 from azure.ai.documentintelligence import DocumentIntelligenceClient  
 from azure.ai.documentintelligence.models import DocumentAnalysisFeature  
@@ -19,6 +23,9 @@ from modules.config import (
     ADI_KEY,  
     ADI_MODEL,  
 )  
+from modules.processing_status import (
+    decode_metadata_text, encode_metadata_text, read_status, set_status, status_metadata,
+)
   
 OCR_SUPPORTED_EXTS = {  
     ".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"  
@@ -81,7 +88,10 @@ def upload_file_to_ocr_input(file_name: str, data: bytes) -> str:
         raise ValueError(f"非対応形式です: {ext}")  
   
     container = get_upload_container_client()  
-    container.upload_blob(file_name, data, overwrite=True)  
+    if container.get_blob_client(file_name).exists():
+        stem, suffix = os.path.splitext(file_name)
+        file_name = f"{stem}_{uuid.uuid4().hex}{suffix}"
+    container.upload_blob(file_name, data, overwrite=False, metadata=status_metadata("queued"))
     return file_name  
   
   
@@ -89,14 +99,30 @@ def list_uploaded_files() -> list[dict]:
     container = get_upload_container_client()  
     results = []  
   
-    for blob in container.list_blobs():  
+    for blob in container.list_blobs(include=["metadata"]):
+        status = read_status(blob.metadata or {})
         results.append({  
             "name": blob.name,  
             "size": blob.size,  
             "last_modified": blob.last_modified,  
+            **status,
         })  
   
-    return _sort_blob_items(results)  
+    legacy = [item for item in results if item["status"] == "unknown"]
+    if legacy:
+        stems = {}
+        for item in results:
+            stems.setdefault(os.path.splitext(item["name"])[0], []).append(item)
+        for result in get_chunk_container_client().list_blobs(include=["metadata"]):
+            source_name = source_name_for_result(result.name, result.metadata or {})
+            match = re.fullmatch(r"(.+)_ocr_\d{8}_\d{6}\.md", result.name)
+            candidates = (
+                [item for item in legacy if item["name"] == source_name]
+                if source_name else stems.get(match.group(1), []) if match else []
+            )
+            if len(candidates) == 1 and candidates[0]["status"] == "unknown":
+                candidates[0].update(status="completed", result_blob_name=result.name)
+    return _sort_blob_items(results)
   
   
 def process_ocr_from_blob(blob_name: str) -> str:  
@@ -109,10 +135,15 @@ def process_ocr_from_blob(blob_name: str) -> str:
     """  
     upload_container = get_upload_container_client()  
     chunk_container = get_chunk_container_client()  
-    adi_client = get_adi_client()  
   
-    temp_file_path = None  
+    source = upload_container.get_blob_client(blob_name)
+    properties = source.get_blob_properties()
+    if read_status(properties.metadata or {})["status"] == "processing":
+        raise ResourceModifiedError("このファイルのOCRは既に実行中です。")
+    set_status(source, "processing", properties=properties)
+    temp_file_path = None
     try:  
+        adi_client = get_adi_client()
         suffix = os.path.splitext(blob_name)[1]  
   
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:  
@@ -142,10 +173,14 @@ def process_ocr_from_blob(blob_name: str) -> str:
             output_blob_name,  
             markdown_content.encode("utf-8"),  
             overwrite=True,  
+            metadata={"source_blob_name": encode_metadata_text(blob_name)},
         )  
-  
+        set_status(source, "completed", result_blob_name=output_blob_name)
         return output_blob_name  
-  
+    except Exception as error:
+        logging.exception("OCR failed for %s", blob_name)
+        set_status(source, "failed", error=str(error))
+        raise
     finally:  
         if temp_file_path and os.path.exists(temp_file_path):  
             os.remove(temp_file_path)  
@@ -155,14 +190,43 @@ def list_ocr_results() -> list[dict]:
     container = get_chunk_container_client()  
     results = []  
   
-    for blob in container.list_blobs():  
+    for blob in container.list_blobs(include=["metadata"]):
         results.append({  
             "name": blob.name,  
             "size": blob.size,  
             "last_modified": blob.last_modified,  
+            "source_blob_name": source_name_for_result(blob.name, blob.metadata or {}),
         })  
   
     return _sort_blob_items(results)  
+
+
+def source_name_for_result(blob_name: str, metadata: dict) -> str:
+    encoded = metadata.get("source_blob_name", "")
+    if encoded:
+        return decode_metadata_text(encoded)
+    return ""
+
+
+def get_ocr_result_source(blob_name: str) -> str:
+    properties = get_chunk_container_client().get_blob_client(blob_name).get_blob_properties()
+    source_name = source_name_for_result(blob_name, properties.metadata or {})
+    if source_name:
+        return source_name
+    match = re.fullmatch(r"(.+)_ocr_\d{8}_\d{6}\.md", blob_name)
+    if match:
+        stem = match.group(1)
+        candidates = [
+            blob.name for blob in get_upload_container_client().list_blobs()
+            if os.path.splitext(blob.name)[0] == stem
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
+    return ""
+
+
+def load_ocr_source(blob_name: str) -> bytes:
+    return get_upload_container_client().download_blob(blob_name).readall()
   
   
 def load_ocr_result_text(blob_name: str) -> str:  

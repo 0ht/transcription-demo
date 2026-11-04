@@ -348,6 +348,125 @@ body.history-collapsed .app-shell.sidebar-open {
   border-left: 4px solid #3b82f6;  
   padding-left: 8px;  
 }  
+
+.upload-sidebar {
+  overflow-y: auto;
+}
+
+.upload-sidebar .sidebar-section {
+  flex-shrink: 0;
+}
+
+.upload-sidebar .history-list {
+  flex: auto;
+  max-height: 280px;
+}
+
+.source-upload-list {
+  max-height: 220px;
+}
+
+.processing-status-field {
+  margin-top: 6px;
+}
+
+.processing-status {
+  display: inline-block;
+  border-radius: 6px;
+  padding: 3px 7px;
+  font-size: 12px;
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.processing-status-queued {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.processing-status-processing {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.processing-status-completed {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.processing-status-failed,
+.processing-error {
+  color: #991b1b;
+}
+
+.processing-status-failed {
+  background: #fee2e2;
+}
+
+.processing-error {
+  margin-top: 5px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.ocr-comparison {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.ocr-comparison-pane {
+  min-width: 0;
+}
+
+.ocr-comparison-pane h2,
+.ocr-comparison-pane label {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.ocr-source-preview,
+#ocrResultPreview {
+  height: 65vh;
+  min-height: 360px;
+}
+
+.ocr-source-preview {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: white;
+  overflow: auto;
+}
+
+.ocr-source-preview iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.ocr-source-preview img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+#ocrSourceDownload {
+  display: inline-block;
+  margin-top: 8px;
+}
+
+#ocrSourceDownload[hidden] {
+  display: none;
+}
+
+@media (max-width: 1000px) {
+  .ocr-comparison {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
   
 .left-sidebar.collapsed .button-row,  
 .left-sidebar.collapsed .history-list,  

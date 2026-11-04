@@ -18,6 +18,11 @@ USER_USERS = {
     for x in os.getenv("USER_USERS", "").split(",")  
     if x.strip()  
 }  
+ADMIN_USER_IDS = {
+    value.strip().lower()
+    for value in os.getenv("ADMIN_USER_IDS", "").split(",")
+    if value.strip()
+}
   
   
 class UserContext:  
@@ -83,6 +88,8 @@ def _extract_user_identifiers(principal: dict) -> dict:
         val = c.get("val", "") or ""  
         if not val:  
             continue  
+        if typ == "oid" or typ.endswith("/claims/objectidentifier"):
+            user_id = val
   
         if typ == "preferred_username" or typ.endswith("/claims/preferredusername"):  
             preferred_usernames.append(val)  
@@ -136,6 +143,12 @@ def resolve_user_context_from_principal(principal: Optional[dict]) -> UserContex
             auth_source="env:TEST_GROUP",  
         )  
   
+    if user_id and user_id.lower() in ADMIN_USER_IDS:
+        return UserContext(
+            user_id=user_id, user_name=user_name, user_email=user_email,
+            group="admin", claims=claims, auth_source="env:ADMIN_USER_IDS",
+        )
+
     # 2. 個別ユーザー指定  
     if user_email:  
         if user_email in ADMIN_USERS:  

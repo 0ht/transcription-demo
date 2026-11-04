@@ -91,62 +91,22 @@ graph TB
 | 項目 | 内容 |
 |------|------|
 | AI 基盤 | **Microsoft Foundry プロジェクト**（新型 accounts/projects 子リソース）内の AI Services リソースとして Speech サービスを利用 |
-| サービス | Azure AI Speech (Speech to Text) - Batch Transcription API v3.2 |
+| サービス | Azure AI Speech Fast Transcription API `2025-10-15`。Functions から音声本体を送信 |
 | 言語 | 日本語 (`ja-JP`)。必要に応じて多言語対応を検討 |
-| 話者分離 | **Diarization 有効** + `properties.channels: [0]` 指定（詳細は下記「話者分離の方式と設定理由」参照） |
+| 話者分離 | `diarization.enabled=true`。Fast API の既定のチャンネル統合を使用 |
 | Functions ホスティング | Azure Functions Flex Consumption (FC1)。コードデプロイ |
 | 接続方式 | Managed Identity 経由で AI Services エンドポイントにアクセス |
 
 > **構成**: AI Services リソース（`kind=AIServices`, `allowProjectManagement=true`）の子リソースとして Foundry Project（`accounts/projects`）を作成。Hub 不要の新型スタンドアロン構成（API `2025-06-01`）。
 
-#### 話者分離の方式と設定理由
+#### Policy 準拠の音声処理
 
-##### 前提知識: 音声のチャンネルと話者識別
-
-音声ファイルは「チャンネル」という独立した音声トラックを持つ。
-
-| 種類 | チャンネル数 | 典型例 |
-|------|--------------|--------|
-| モノラル | 1 | ボイスメモ、電話の片側録音、会議の単一マイク |
-| ステレオ | 2 | 自分=L / 相手=R で録音した PC 会議 |
-| マルチチャンネル | 3 以上 | 多人数会議で 1 人 1 マイクの multi-track 録音 |
-
-Azure Speech Batch Transcription には**話者を識別する 2 つの異なる方式**がある。
-
-| 方式 | 仕組み | 適した録音 |
-|------|--------|------------|
-| **Multi-channel transcription** | 各チャンネルを独立した話者として扱う（L=話者A、R=話者B 固定） | 物理的に話者がチャンネル分離されている録音（コールセンター録音等） |
-| **Diarization** | 音声内容から AI が話者を推定（声紋ベース） | 1 チャンネルに複数人が混在する録音（会議室の単一マイク等） |
-
-そして Speech には次の制約がある:
-
-> ⚠️ **マルチチャンネル処理と Diarization は同時利用不可**
-
-ステレオ音声をそのまま投げて「ステレオ扱いしつつ Diarization もする」はエラーになる。
-
-##### 本システムの設計選択
-
-本システムはユーザーが多様なソース（モノラル / ステレオ / 動画から抽出した音声）をアップロードする前提のため、**入力フォーマットに依らず Diarization で統一的に話者分離する** 方針とした。
-
-そのために Batch Transcription リクエストで以下を指定する。
-
-```jsonc
-{
-  "properties": {
-    "diarizationEnabled": true,
-    "channels": [0]   // 0-origin: L チャンネルのみ処理
-  }
-}
-```
-
-`channels: [0]` を指定する効果:
-
-1. Speech が**強制的にシングルチャンネル処理**として動作する
-2. multi-channel 経路に入らないため **Diarization と共存可能**
-3. ステレオファイルでも L チャンネル（index 0）のみを使用し、AI が声紋で話者推定
-4. モノラルファイルでは元々 ch 0 しかないため安全に動作
-
-> 💡 **将来検討**: コールセンター録音のように「物理的に話者が左右分離されている」用途が増えた場合は、リクエストごとに `channels` 指定の有無を切り替える分岐を入れることで multi-channel 方式も併用可能。
+Functions が Private Endpoint で Blob を取得し、一時ファイルを用いた multipart
+ストリーミングで Speech の Private Endpoint に直接送信する。
+Speech バックエンドから Storage への URL pull、SAS、Trusted Access は使用しない。
+既定のチャンネル統合と `diarization: {enabled: true, maxSpeakers: 35}` で話者を識別する。
+応答の `phrases` とミリ秒オフセットを既存の `segments` / ISO 8601 時刻へ変換する。
+Queue による非同期処理、JSON/TXT 出力、processed への原本退避は維持する。
 
 ### 3.4 出力形式
 
@@ -236,7 +196,7 @@ processed/
 | 重複イベント（Queue 再配信） | Queue は at-least-once 配信のため同一 blob のイベントが再配信され得る。処理成功時は元ファイルが `input` → `processed` へ移動して消えるので、**`input` に元ファイルが存在しなければ処理済みとみなしスキップ**（冪等性）。 |
 | 認証・権限エラー | リトライしても回復しないため**即座に終端化**（3 回待たずに `_error.json` 出力 + `processed` 退避）。 |
 | 文字起こし失敗（最大 3 回リトライ後も失敗） | **失敗を終端化**: ① `output/<y>/<m>/<d>/<stem>_error.json` にエラー詳細を書き出し、② 元ファイルを `input` → `processed` へ移動、③ キューメッセージは正常 dequeue（poison キュー行きを回避）。UI は `_error.json` を検知して **❌ エラー** として一覧表示（理由付き）。 |
-| 大容量ファイル | Batch Transcription API で非同期処理。タイムアウトなし |
+| 大容量ファイル | Queue で非同期処理。250 MB 未満・2 時間未満。超過時は投入前に分割 |
 | 空ファイル / 音声なし | スキップ。ログに「音声コンテンツなし」と記録 |
 
 > **エラーマーカー方式の採用理由**: 旧設計では失敗時に例外を再 raise してキューを poison 行きにしていたが、UI 側の poison メッセージ検知は経路が複雑（Queue peek + ログ突合）で表示の安定性に欠けた。output コンテナにマーカーを書く方式は、UI が Blob を 1 回列挙するだけで確実にエラー一覧化でき、削除も `_error.json` + processed 元ファイルの 2 件削除で完結する。
@@ -291,7 +251,7 @@ Search は通常 `publicNetworkAccess=Disabled` とし、Storage / Azure OpenAI 
 | 項目 | 要件 |
 |------|------|
 | 処理件数 | 未定（スケーラブルな設計とする） |
-| 最大ファイルサイズ | 1GB（Batch Transcription API の上限に準拠） |
+| 最大音声サイズ・時間 | 250 MB 未満・2 時間未満（Fast API REST 仕様に合わせた保守的な運用上限） |
 | 同時処理数 | Azure Functions のスケーリングに委ねる |
 
 ### 4.2 セキュリティ・ネットワーク
@@ -304,9 +264,9 @@ ACA（FastAPI UI）のフロントエンド Ingress **のみ外部公開**。バ
 
 | リソース | ネットワーク構成 | 説明 |
 |----------|------------------|------|
-| Azure Blob Storage | **Private Endpoint**（+ Trusted Service） | Private Endpoint 経由アクセスを基本とする。データストレージは `publicNetworkAccess=Enabled` + `defaultAction=Deny` とし、AI Services のみ `resourceAccessRules` で許可（Speech Batch Transcription の Trusted Access 要件）。ファンクションランタイム用ストレージは `publicNetworkAccess=Disabled`。 |
+| Azure Blob Storage | **Private Endpoint** | データ / Functions ランタイムとも `publicNetworkAccess=Disabled`。Functions が音声を読み、Speech に直接送信する |
 | Azure Functions | **VNet 統合 + Private Endpoint** | Functions → 外部通信は VNet 経由。受信も Private Endpoint で制限 |
-| Azure AI Foundry Project | **Private Endpoint**（受信）+ **network injection**（送信） | プロジェクト自体に Private Endpoint を設定し閉域受信。送信は `networkInjections`（`scenario=agent`）で `snet-agent` に注入し **Agent Service の送信を VNet 統合**。ただし Batch Transcription / OpenAI 推論の送信は対象外（Microsoft バックボーン経由）。`networkInjections` は **create-only**（作成時のみ設定可・後付け不可）。 |
+| Azure AI Foundry Project | **Private Endpoint**（受信）+ **network injection**（Agent 送信） | `networkInjections` は Agent 専用・作成時のみ。Speech Fast API は Functions の VNet 統合と AI Services の Private Endpoint 経由で呼ぶ |
 | Application Insights | **Azure Monitor Private Link Scope (AMPLS)** | ログ送信・クエリを Private Link 経由に制限 |
 | Azure OpenAI | **Private Endpoint**（`privatelink.openai.azure.com`） | UI の回答生成と Search の統合ベクトル化から閉域アクセスする |
 | Azure AI Search | **Private Endpoint + shared private link** | UI は PE 経由で検索する。Search は shared private link 経由で Storage / Azure OpenAI に接続する |
@@ -332,7 +292,7 @@ Azure AI Search は `AZURE_SEARCH_LOCATION` で主リージョンから分離で
 |------|------|
 | Blob アクセス | Managed Identity による認証（キーレス）。SAS / アクセスキー無効化 |
 | Blob パブリックアクセス | **無効**（`allowBlobPublicAccess: false`） |
-| UI アクセス | 社内 NW 制限（IP 制限 or VPN 経由）。認証なし |
+| UI アクセス | Entra ID 組み込み認証 + 明示的な管理者 object ID / グループ / ロール。IP 制限を併用可能 |
 | データ保持 | 保持期間は運用ポリシーに従う（ライフサイクル管理で自動削除を検討） |
 | DNS | Private DNS Zone を使用（`privatelink.blob.core.windows.net` 等） |
 
@@ -340,14 +300,14 @@ Azure AI Search は `AZURE_SEARCH_LOCATION` で主リージョンから分離で
 
 | 項目 | 設定値 | 理由 |
 |------|--------|------|
-| `publicNetworkAccess` | **`Enabled`** | Speech Batch Transcription は Trusted Service 経由で Storage を fetch する際、パブリックエンドポイントが有効である必要がある（`Disabled` にすると `resourceAccessRules` が機能せず `InvalidData: The recordings URI contains invalid data.` で失敗する）。 |
-| `networkAcls.defaultAction` | **`Deny`** | パブリックエンドポイント自体は開いているが、デフォルトで全リクエストを拒否し、明示的に許可した送信元のみ通す。 |
-| `networkAcls.bypass` | **`AzureServices`** | Trusted Azure Services 経由のアクセスを許可（Speech / Event Grid 連携の前提）。 |
-| `networkAcls.resourceAccessRules` | AI Services リソース ID を登録 | Speech Batch Transcription バックエンドが、登録された AI Services 経由で発行されたジョブに対してのみ Storage アクセスを許可。 |
+| `publicNetworkAccess` | **`Disabled`** | 組織ポリシーに準拠し、Private Endpoint のみ使用 |
+| `networkAcls.defaultAction` | **`Deny`** | Public Access 無効化に加え、既定のネットワーク ACL も拒否 |
+| `networkAcls.bypass` | **`AzureServices`** | 既存の Event Grid 連携設定を維持。Speech はこの例外に依存しない |
+| `networkAcls.resourceAccessRules` | Speech 用の登録なし | Speech は Storage にアクセスしない |
 | `allowSharedKeyAccess` | **`false`** | アカウントキー / SAS 認証を全面禁止し、Entra ID 認証のみに統一。 |
 | `allowBlobPublicAccess` | **`false`** | コンテナ単位の匿名読み取りを禁止。 |
 | Private Endpoint | **Blob / Queue の 2 つを配置**（データ Storage） | Functions・Container Apps・デプロイ実行者は VNet 統合 → Private DNS Zone 経由で PE に名前解決してアクセス。Functions ランタイム用ストレージには別途 Blob / Table の PE を配置（Flex Consumption 要件）。 |
-| CLI からの手動アップロード | 自分の IP を `network-rule add` で一時許可 | デプロイ運用者やテスト時に必要。`publicNetworkAccess` の切替は不要。テスト完了後は IP ルールのみ削除。詳細は [deploy-guide.md](./deploy-guide.md) セクション 9・11 を参照。 |
+| 手動アップロード | 管理者 UI、または VNet/VPN 接続済みの CLI | データ Storage の Public Access は開放しない |
 
 > **Functions ランタイム用ストレージ** (`sttranscriptionfunc{env}`) は AI Services Trusted Access が不要のため `publicNetworkAccess: Disabled` で完全閉域化する。azd デプロイ時のみ hooks (`predeploy` / `postdeploy`) で一時開放・再閉域化を自動実行する。
 
@@ -367,7 +327,7 @@ Azure AI Search は `AZURE_SEARCH_LOCATION` で主リージョンから分離で
 | Azure Blob Storage | ファイル保管（input / processed / output）+ Event Grid Queue | Private Endpoint (blob + queue) |
 | Azure Event Grid | Blob イベント検知 → Storage Queue 配信 | システムトピック |
 | Azure Functions (Python, Flex Consumption) | Queue Trigger → 文字起こし処理 | VNet 統合 + Private Endpoint |
-| Azure AI Services (kind=AIServices) | 音声→テキスト変換（Batch Transcription API） | Private Endpoint |
+| Azure AI Services (kind=AIServices) | 音声→テキスト変換（Fast Transcription API） | Private Endpoint |
 | Microsoft Foundry Project | AI サービスのプロジェクト管理（accounts/projects 子リソース） | 親リソースの PE 経由 |
 | Azure OpenAI | RAG のチャット(回答生成)・埋め込み(ベクトル化) | Private Endpoint |
 | Azure AI Search | 文字起こしチャンクのベクトル/セマンティック検索（`documents` インデックス） | Private Endpoint |
@@ -387,7 +347,7 @@ Azure AI Search は `AZURE_SEARCH_LOCATION` で主リージョンから分離で
    - 対象外 → スキップ（ログ記録）
    - テキスト系 → テキスト抽出
    - 音声 → 6 へ
-6. Azure AI Speech Batch Transcription API で文字起こし（話者分離有効）
+6. Functions が音声を読み、Azure AI Speech Fast Transcription API へ直接送信（話者分離有効）
    - 成功 → 7（成功フロー）
    - 3 回リトライしても失敗 → 7'（失敗フロー）
 7. 成功フロー: 結果を txt / JSON で output コンテナに保存 → 元ファイルを input → processed へ移動
@@ -407,4 +367,3 @@ Azure AI Search は `AZURE_SEARCH_LOCATION` で主リージョンから分離で
 - [ ] Entra ID 認証の追加（外部アクセス対応時）
 - [ ] 処理件数・サイズの制限値の確定
 - [ ] データ保持ポリシーの確定（自動削除ルール）
-

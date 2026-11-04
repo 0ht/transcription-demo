@@ -1,10 +1,13 @@
 #modules/realtime_session.py
 import asyncio  
 import base64  
+import logging
 from datetime import datetime  
 from typing import Any, Dict, List, Optional  
   
-from modules.config import create_realtime_client, realtime_model, whisper_model  
+from modules.config import create_realtime_client, realtime_model, input_transcription_model
+
+LOGGER = logging.getLogger(__name__)
   
   
 class RealtimeMeetingSession:  
@@ -22,6 +25,8 @@ class RealtimeMeetingSession:
   
         # partial は別管理  
         self.partial_transcript: str = ""  
+        self._partial_by_item: Dict[str, str] = {}
+        self.last_error: Optional[str] = None
   
         self.audio_chunk_count = 0  
   
@@ -48,13 +53,23 @@ class RealtimeMeetingSession:
         async with self.lock:  
             self.transcript_events.append(payload)  
   
-    async def _set_partial_transcript(self, text: str):  
+    async def _append_partial_transcript(self, text: str, item_id: str = ""):
         async with self.lock:  
-            self.partial_transcript = (text or "").strip()  
+            self._partial_by_item[item_id] = self._partial_by_item.get(item_id, "") + text
+            self.partial_transcript = "".join(self._partial_by_item.values())
   
-    async def _clear_partial_transcript(self):  
+    async def _clear_partial_transcript(self, item_id: Optional[str] = None):
         async with self.lock:  
-            self.partial_transcript = ""  
+            if item_id is None:
+                self._partial_by_item.clear()
+            else:
+                self._partial_by_item.pop(item_id, None)
+            self.partial_transcript = "".join(self._partial_by_item.values())
+
+    async def _record_error(self, message: str, event_type: str):
+        self.last_error = message
+        LOGGER.error("Realtime session %s: %s", self.session_id, message)
+        await self._append_event(message, source="system", extra={"event_type": event_type})
   
     async def get_partial_transcript(self) -> str:  
         async with self.lock:  
@@ -85,7 +100,7 @@ class RealtimeMeetingSession:
                     "audio": {  
                         "input": {  
                             "transcription": {  
-                                "model": whisper_model,
+                                "model": input_transcription_model,
                                 "language":"ja"
                             },  
                             "format": {  
@@ -153,23 +168,18 @@ class RealtimeMeetingSession:
   
     async def ingest_audio_chunk(self, chunk: bytes):  
         if not self.running or self.connection is None:  
-            await self._append_event(  
-                "[warning] realtime connection is not started",  
-                source="system",  
-                extra={"event_type": "warning"},  
-            )  
-            return  
+            raise RuntimeError("Realtime connection is not running; start a new conversation")
   
         try:  
             encoded = base64.b64encode(chunk).decode("utf-8")  
             await self.connection.input_audio_buffer.append(audio=encoded)  
             self.audio_chunk_count += 1  
         except Exception as e:  
-            await self._append_event(  
+            await self._record_error(
                 f"[audio ingest error] {str(e)}",  
-                source="system",  
-                extra={"event_type": "audio_ingest_error"},  
+                "audio_ingest_error",
             )  
+            raise
   
     async def finalize_audio_input(self):  
         if not self.running or self.connection is None:  
@@ -218,20 +228,13 @@ class RealtimeMeetingSession:
                     )  
   
                 # partial  
-                elif event_type in {  
-                    "conversation.item.input_audio_transcription.delta",  
-                    "response.output_audio_transcript.delta",  
-                }:  
+                elif event_type == "conversation.item.input_audio_transcription.delta":
                     delta = getattr(event, "delta", "") or ""  
-                    delta = delta.strip()  
                     if delta:  
-                        await self._set_partial_transcript(delta)  
+                        await self._append_partial_transcript(delta, getattr(event, "item_id", ""))
   
                 # final  
-                elif event_type in {  
-                    "conversation.item.input_audio_transcription.completed",  
-                    "response.output_audio_transcript.done",  
-                }:  
+                elif event_type == "conversation.item.input_audio_transcription.completed":
                     transcript = ""  
   
                     if hasattr(event, "transcript"):  
@@ -254,7 +257,17 @@ class RealtimeMeetingSession:
                             extra={"event_type": event_type},  
                         )  
   
-                    await self._clear_partial_transcript()  
+                    await self._clear_partial_transcript(getattr(event, "item_id", ""))
+
+                elif event_type == "conversation.item.input_audio_transcription.failed":
+                    error = getattr(event, "error", None)
+                    code = getattr(error, "code", "unknown")
+                    message = getattr(error, "message", "Input transcription failed")
+                    await self._record_error(
+                        f"Input transcription failed: code={code} message={message}",
+                        "transcription_failed",
+                    )
+                    await self._clear_partial_transcript(getattr(event, "item_id", ""))
   
                 elif event_type == "response.output_text.delta":  
                     delta = getattr(event, "delta", "") or ""  
@@ -278,10 +291,9 @@ class RealtimeMeetingSession:
                     message = getattr(error, "message", "") if error else ""  
                     event_id = getattr(error, "event_id", "") if error else ""  
   
-                    await self._append_event(  
+                    await self._record_error(
                         f"[Realtime error] code={code} event_id={event_id} message={message}",  
-                        source="system",  
-                        extra={"event_type": event_type},  
+                        event_type,
                     )  
   
                 elif event_type == "response.done":  
@@ -298,11 +310,17 @@ class RealtimeMeetingSession:
         except asyncio.CancelledError:  
             raise  
         except Exception as e:  
-            await self._append_event(  
+            await self._record_error(
                 f"[listener error] {str(e)}",  
-                source="system",  
-                extra={"event_type": "listener_error"},  
+                "listener_error",
             )  
+        finally:
+            if self.running and self.last_error is None:
+                await self._record_error(
+                    "Realtime connection closed; end this conversation and start a new one",
+                    "connection_closed",
+                )
+            self.running = False
   
     async def get_transcript_events(self) -> List[Dict[str, Any]]:  
         async with self.lock:  
@@ -326,4 +344,6 @@ class RealtimeMeetingSession:
         async with self.lock:  
             self.transcript_events = []  
             self.partial_transcript = ""  
+            self._partial_by_item.clear()
+            self.last_error = None
             self.audio_chunk_count = 0  

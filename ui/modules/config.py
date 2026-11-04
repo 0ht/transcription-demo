@@ -44,7 +44,9 @@ _available_models_from_env = _parse_csv_env(os.getenv("AOAI_AVAILABLE_MODELS", "
 AVAILABLE_LLM_MODELS = _available_models_from_env or [aoai_model, aoai_model_fast]  
   
 realtime_model = require_env("REALTIME_MODEL")  
-whisper_model = os.getenv("WHISPER_MODEL", "whisper")  
+input_transcription_model = os.getenv(
+    "INPUT_TRANSCRIPTION_MODEL", os.getenv("WHISPER_MODEL", "whisper")
+)
   
   
 def list_available_llm_models() -> list[str]:  

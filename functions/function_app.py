@@ -1,13 +1,15 @@
 """
 Azure Functions - Blob 文字起こし処理
-Queue Trigger → Batch Transcription API / テキスト抽出
+Queue Trigger → Fast Transcription API / テキスト抽出
 対応: 音声ファイル (.wav/.mp3/.m4a/.ogg/.flac/.wma) + テキスト (.txt/.md/.json/.vtt)
 """
 
+import base64
 import json
 import logging
 import os
 import time
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from azure.core.exceptions import ClientAuthenticationError
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
 import requests
+from requests_toolbelt.multipart.encoder import MultipartEncoder
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -34,11 +37,16 @@ TEXT_EXTS = {".txt", ".md", ".json", ".vtt"}
 ALL_SUPPORTED = AUDIO_EXTS | TEXT_EXTS
 
 MAX_RETRIES = 3
-POLL_INTERVAL_SEC = 30
-MAX_POLL_COUNT = 120  # 120 × 30s = 60 min
+MAX_AUDIO_BYTES = 250_000_000
+MAX_AUDIO_DURATION_MS = 2 * 60 * 60 * 1000
+SPEECH_API_VERSION = '2025-10-15'
+
+
+class InvalidAudioError(ValueError):
+    pass
 
 # リトライしても回復しない例外（認証・権限不足など）は即座に終端化する。
-_NON_RETRYABLE = (ClientAuthenticationError,)
+_NON_RETRYABLE = (ClientAuthenticationError, InvalidAudioError)
 
 app = func.FunctionApp()
 
@@ -63,15 +71,23 @@ def _input_exists(blob_name: str) -> bool:
     return _blob_svc().get_blob_client(CONTAINER_INPUT, blob_name).exists()
 
 
+def _set_processing_status(blob_name: str, status: str, *, error: str = "", result_path: str = "") -> None:
+    blob = _blob_svc().get_blob_client(CONTAINER_INPUT, blob_name)
+    metadata = dict(blob.get_blob_properties().metadata or {})
+    metadata.update({
+        "processing_status": status,
+        "processing_updated_at": datetime.now(timezone.utc).isoformat(),
+        "processing_error": base64.b64encode(error[:500].encode("utf-8")).decode("ascii"),
+        "processing_result": base64.b64encode(result_path.encode("utf-8")).decode("ascii"),
+    })
+    blob.set_blob_metadata(metadata)
+
+
 def _speech_headers():
     token = _credential().get_token(
         "https://cognitiveservices.azure.com/.default"
     ).token
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-
-def _blob_url(container: str, name: str) -> str:
-    return f"{STORAGE_URL}/{container}/{name}"
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _output_prefix(blob_name: str) -> str:
@@ -111,90 +127,68 @@ def extract_text(blob_name: str, ext: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Batch Transcription API
+# Fast Transcription API
 # ---------------------------------------------------------------------------
-def create_transcription(audio_url: str, blob_name: str) -> str:
-    """Batch Transcription ジョブを作成し、ID を返す"""
-    url = f"{AI_ENDPOINT}/speechtotext/v3.2/transcriptions"
-    body = {
-        "contentUrls": [audio_url],
-        "locale": SPEECH_LANG,
-        "displayName": f"Transcription: {blob_name}",
-        "properties": {
-            "diarizationEnabled": True,
-            "wordLevelTimestampsEnabled": True,
-            "punctuationMode": "DictatedAndAutomatic",
-            "timeToLiveHours": 48,
-            # ステレオ音声でも diarization を有効化するため、単一チャンネル(0)のみを処理対象とする
-            # （Speech Batch Transcription はマルチチャンネル + diarization の併用を許可しないため）
-            "channels": [0],
-        },
-    }
-    resp = requests.post(url, headers=_speech_headers(), json=body, timeout=60)
-    resp.raise_for_status()
-    return resp.json()["self"].rsplit("/", 1)[-1]
+def _iso_duration_ms(milliseconds: int) -> str:
+    if type(milliseconds) is not int or milliseconds < 0:
+        raise ValueError("Speech returned an invalid millisecond timestamp")
+    seconds, fraction = divmod(milliseconds, 1000)
+    return f"PT{seconds}.{fraction:03d}S"
 
 
-def wait_for_transcription(tid: str) -> None:
-    """ポーリングで Batch Transcription の完了を待機"""
-    url = f"{AI_ENDPOINT}/speechtotext/v3.2/transcriptions/{tid}"
-    for i in range(MAX_POLL_COUNT):
-        resp = requests.get(url, headers=_speech_headers(), timeout=30)
-        resp.raise_for_status()
-        body = resp.json()
-        status = body["status"]
-        logging.info("Transcription %s poll %d/%d: %s", tid, i + 1, MAX_POLL_COUNT, status)
-        if status == "Succeeded":
-            return
-        if status == "Failed":
-            # 失敗時はジョブ全体と /files の TranscriptionReport を出力
-            logging.error("Transcription %s FULL job body: %s", tid, json.dumps(body))
-            try:
-                files_resp = requests.get(f"{url}/files", headers=_speech_headers(), timeout=30)
-                files_json = files_resp.json()
-                logging.error("Transcription %s /files: %s", tid, json.dumps(files_json)[:4000])
-                # report.json の中身を取得
-                for f in files_json.get("values", []):
-                    if f.get("kind") == "TranscriptionReport":
-                        rep_url = f["links"]["contentUrl"]
-                        rep_resp = requests.get(rep_url, timeout=30)
-                        logging.error("Transcription %s REPORT body: %s", tid, rep_resp.text[:4000])
-            except Exception as exc:
-                logging.error("Failed to fetch error details for %s: %s", tid, exc)
-            error = body.get("properties", {}).get("error", {})
-            raise Exception(f"Transcription failed: {json.dumps(error)}")
-        time.sleep(POLL_INTERVAL_SEC)
-    raise Exception(f"Transcription {tid} timed out after {MAX_POLL_COUNT * POLL_INTERVAL_SEC}s")
+def transcribe_audio(blob_name: str) -> dict:
+    """Private Blob を読み、URL や SAS を渡さず音声本体を Speech に送る。"""
+    blob = _blob_svc().get_blob_client(CONTAINER_INPUT, blob_name)
+    size = blob.get_blob_properties().size
+    if not 0 < size < MAX_AUDIO_BYTES:
+        raise InvalidAudioError("Audio must be nonempty and smaller than 250 MB")
 
+    with tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024) as audio:
+        downloaded = blob.download_blob().readinto(audio)
+        if downloaded != size:
+            raise InvalidAudioError("Audio size changed during download; upload it again")
+        audio.seek(0)
+        form = MultipartEncoder(fields={
+            "audio": (Path(blob_name).name, audio, "application/octet-stream"),
+            "definition": json.dumps({
+                "locales": [SPEECH_LANG],
+                "diarization": {"enabled": True, "maxSpeakers": 35},
+            }),
+        })
+        headers = _speech_headers()
+        headers["Content-Type"] = form.content_type
+        response = requests.post(
+            f"{AI_ENDPOINT.rstrip('/')}/speechtotext/transcriptions:transcribe",
+            params={"api-version": SPEECH_API_VERSION},
+            headers=headers, data=form, timeout=(30, 900),
+        )
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as error:
+            logging.error("Speech HTTP %s: %s", response.status_code, response.text[:2000])
+            if response.status_code in (400, 401, 403, 413, 415, 422):
+                raise InvalidAudioError(
+                    f"Speech rejected audio (HTTP {response.status_code}): "
+                    f"{response.text[:1000]}"
+                ) from error
+            raise
+        content = response.json()
 
-def fetch_transcription_results(tid: str, blob_name: str) -> dict:
-    """Batch Transcription の結果を取得して返す（ジョブ削除は呼び出し側の責務）"""
-    files_url = f"{AI_ENDPOINT}/speechtotext/v3.2/transcriptions/{tid}/files"
-    resp = requests.get(files_url, headers=_speech_headers(), timeout=30)
-    resp.raise_for_status()
-
+    duration = _iso_duration_ms(content["durationMilliseconds"])
+    if content["durationMilliseconds"] >= MAX_AUDIO_DURATION_MS:
+        raise InvalidAudioError("Audio must be shorter than 2 hours; split it before uploading")
     segments = []
-    duration = "PT0S"
-
-    for f in resp.json().get("values", []):
-        if f.get("kind") != "Transcription":
-            continue
-        content_url = f["links"]["contentUrl"]
-        # contentUrl は SAS 付き URL なので Authorization ヘッダを付けない
-        content_resp = requests.get(content_url, timeout=120)
-        content_resp.raise_for_status()
-        content = content_resp.json()
-        duration = content.get("duration", duration)
-        for seg in content.get("recognizedPhrases", []):
-            speaker = f"Speaker {seg.get('speaker', '?')}"
-            best = seg["nBest"][0] if seg.get("nBest") else {}
-            segments.append({
-                "speaker": speaker,
-                "text": best.get("display", ""),
-                "startTime": seg.get("offset", "PT0S"),
-                "endTime": seg.get("offsetEnd", "PT0S"),
-            })
-
+    for phrase in content["phrases"]:
+        start = phrase["offsetMilliseconds"]
+        length = phrase["durationMilliseconds"]
+        start_time = _iso_duration_ms(start)
+        _iso_duration_ms(length)
+        segments.append({
+            "speaker": f"Speaker {phrase.get('speaker', '?')}",
+            "text": phrase["text"],
+            "startTime": start_time,
+            "endTime": _iso_duration_ms(start + length),
+        })
     return {
         "sourceFile": blob_name,
         "processedAt": datetime.now(timezone.utc).isoformat(),
@@ -202,15 +196,6 @@ def fetch_transcription_results(tid: str, blob_name: str) -> dict:
         "language": SPEECH_LANG,
         "segments": segments,
     }
-
-
-def delete_transcription_job(tid: str) -> None:
-    """Batch Transcription ジョブを削除（クリーンアップ）。失敗してもログのみで握りつぶす"""
-    try:
-        del_url = f"{AI_ENDPOINT}/speechtotext/v3.2/transcriptions/{tid}"
-        requests.delete(del_url, headers=_speech_headers(), timeout=30)
-    except Exception as exc:
-        logging.warning("Failed to delete transcription job %s: %s", tid, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +253,8 @@ def move_to_processed(blob_name: str) -> str:
     dst = svc.get_blob_client(CONTAINER_PROCESSED, dest)
 
     data = src.download_blob().readall()
-    dst.upload_blob(data, overwrite=True)
+    metadata = src.get_blob_properties().metadata or {}
+    dst.upload_blob(data, overwrite=True, metadata=metadata)
     src.delete_blob()
 
     logging.info("Moved %s → processed/%s", blob_name, dest)
@@ -311,21 +297,15 @@ def blob_transcribe(msg: func.QueueMessage):
             logging.info(
                 "Processing %s (attempt %d/%d)", blob_name, attempt, MAX_RETRIES
             )
+            _set_processing_status(blob_name, "processing")
 
             if ext in TEXT_EXTS:
                 result = extract_text(blob_name, ext)
             else:
-                # Speech Batch Transcription は Trusted Service + MI でプレーン URL アクセス
-                blob_url = _blob_url(CONTAINER_INPUT, blob_name)
-                tid = create_transcription(blob_url, blob_name)
-                try:
-                    wait_for_transcription(tid)
-                    result = fetch_transcription_results(tid, blob_name)
-                finally:
-                    # 成功/失敗/タイムアウトを問わずジョブを必ず削除
-                    delete_transcription_job(tid)
+                result = transcribe_audio(blob_name)
 
-            save_results(blob_name, result)
+            paths = save_results(blob_name, result)
+            _set_processing_status(blob_name, "completed", result_path=paths["json"])
             move_to_processed(blob_name)
             logging.info("Completed: %s", blob_name)
             return
@@ -348,16 +328,6 @@ def blob_transcribe(msg: func.QueueMessage):
     logging.error(
         "All %d attempts failed for %s: %s", MAX_RETRIES, blob_name, last_error
     )
-    # エラーマーカーを output に書き、input → processed へ移動して終端化する。
-    # これにより:
-    #   - キューは正常完了扱いで dequeue され、poison キューに溜まらない
-    #   - input から消えるため UI で「処理待ち」に残らない
-    #   - output の `_error.json` を UI が ❌ エラー として表示できる
-    try:
-        save_error(blob_name, last_error)
-    except Exception as exc:
-        logging.error("Failed to save error marker for %s: %s", blob_name, exc)
-    try:
-        move_to_processed(blob_name)
-    except Exception as exc:
-        logging.error("Failed to move failed blob %s to processed: %s", blob_name, exc)
+    _set_processing_status(blob_name, "failed", error=str(last_error))
+    save_error(blob_name, last_error)
+    move_to_processed(blob_name)

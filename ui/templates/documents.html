@@ -22,7 +22,7 @@
   </header>  
   
   <div class="app-shell" style="grid-template-columns: 420px minmax(0, 1fr);">  
-    <aside class="left-sidebar" style="width:420px; min-width:420px;">  
+    <aside class="left-sidebar upload-sidebar" style="width:420px; min-width:420px;">
       <div class="sidebar-section">  
         <div class="sidebar-section-header">  
           <h2>ファイルアップロード</h2>  
@@ -42,6 +42,9 @@
         <div id="uploadStatus" class="small" style="margin-top: 12px;">  
           Blob Storage にアップロードすると、Azure Functions が文字起こしを開始します。  
         </div>  
+        <h3 style="margin:16px 0 0;">アップロード後のステータス</h3>
+        <div id="sourceUploadMessage" class="small" role="status" aria-live="polite"></div>
+        <div id="sourceUploadList" class="history-list source-upload-list"></div>
       </div>  
 
 
@@ -162,6 +165,7 @@
     </main>  
   </div>  
   
+  <script src="/static/processing-status.js"></script>
   <script src="/static/documents.js"></script>  
 </body>  
 </html>  

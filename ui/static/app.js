@@ -16,6 +16,7 @@ let isSessionStarting = false;
 let isSessionStopping = false;  
 let isMicStarting = false;  
 let isMicRecording = false;  
+let captureError = null;
 let isAnalyzing = false;  
 let isConfirming = false;  
 let latestAnalysisData = null;  
@@ -630,9 +631,18 @@ async function refreshTranscript(silent = false) {
     }  
   
     renderTranscript(data.full_text || "", data.partial_text || "");  
-  
-    if (isMicRecording) {  
-      setMicStatus(`running=true, chunks=${data.audio_chunk_count}`);  
+
+    if (!data.running) {
+      captureError = data.last_error || "音声接続が終了しました。会話を終了して再開始してください。";
+      await stopMic();
+      closeWebSocket();
+      setMicStatus(captureError);
+    } else if (data.last_error) {
+      setMicStatus(`文字起こしエラー: ${data.last_error} (chunks=${data.audio_chunk_count})`);
+    } else if (captureError) {
+      setMicStatus(captureError);
+    } else if (isMicRecording) {
+      setMicStatus(`recording, chunks=${data.audio_chunk_count}`);
     } else if (currentSessionId) {  
       setMicStatus(`paused, chunks=${data.audio_chunk_count}`);  
     } else {  
@@ -919,9 +929,12 @@ async function connectWebSocket() {
   
   ws = new WebSocket(wsUrl);  
   ws.binaryType = "arraybuffer";  
+  const socket = ws;
   
   await new Promise((resolve, reject) => {  
+    let opened = false;
     ws.onopen = () => {  
+      opened = true;
       console.log("ws open");  
       setMicStatus("websocket connected");  
       updateButtonStates();  
@@ -930,6 +943,11 @@ async function connectWebSocket() {
   
     ws.onmessage = (event) => {  
       console.log("ws message", event.data);  
+      const message = JSON.parse(event.data);
+      if (message.type === "error") {
+        captureError = message.message || "音声送信に失敗しました。";
+        setMicStatus(captureError);
+      }
     };  
   
     ws.onerror = (err) => {  
@@ -941,7 +959,14 @@ async function connectWebSocket() {
   
     ws.onclose = (event) => {  
       console.log("ws close", event.code, event.reason);  
-      setMicStatus("websocket closed");  
+      if (ws !== socket) return;
+      if (!opened) reject(new Error("WebSocket closed before connecting"));
+      captureError = captureError || "音声接続が切断されました。再開してください。";
+      if (isMicRecording) {
+        stopMic().then(() => setMicStatus(captureError));
+      } else {
+        setMicStatus(captureError);
+      }
       updateButtonStates();  
     };  
   });  
@@ -1060,9 +1085,14 @@ async function startMic() {
     processorNode.connect(audioContext.destination);  
   
     isMicRecording = true;  
+    captureError = null;
     setMicStatus(`recording pcm ${audioContext.sampleRate}Hz -> 24000Hz`);  
     openTranscriptSidebar();  
   } catch (e) {  
+    await stopMic();
+    closeWebSocket();
+    captureError = e.message;
+    setMicStatus(captureError);
     alert("録音開始に失敗しました\n" + e.message);  
     throw e;  
   } finally {  
@@ -1072,6 +1102,7 @@ async function startMic() {
 }  
   
 async function stopMic() {  
+  isMicRecording = false;
   try {  
     if (processorNode) {  
       try { processorNode.disconnect(); } catch (_) {}  

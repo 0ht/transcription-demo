@@ -60,6 +60,39 @@ class TestBuildTranscriptText:
 
 @pytest.mark.unit
 class TestGetDocumentDetail:
+    @pytest.mark.parametrize(
+        ("source_file", "transcript_path", "expected_media_path"),
+        [
+            ("meeting.wav", "2026/11/03/meeting_transcript.json", "2026/11/03/meeting.wav"),
+            ("2026/11/03/audio-04-minutes.wav", "2026/11/03/audio-04-minutes_transcript.json",
+             "2026/11/03/audio-04-minutes.wav"),
+            ("2026/11/02/meeting.wav", "2026/11/03/meeting_transcript.json",
+             "2026/11/03/meeting.wav"),
+            ("uploads/team/meeting.mp3", "2026/11/03/meeting_transcript.json",
+             "2026/11/03/meeting.mp3"),
+            ("2026/11/03/会議 #1.wav", "2026/11/03/会議 #1_transcript.json",
+             "2026/11/03/会議 #1.wav"),
+            ("meeting.wav", "meeting_transcript.json", "meeting.wav"),
+        ],
+    )
+    def test_media_path_matches_archived_filename(
+        self, monkeypatch, source_file, transcript_path, expected_media_path
+    ):
+        monkeypatch.setattr(blob_document_service, "load_json",
+                            lambda _: {"sourceFile": source_file})
+        monkeypatch.setattr(blob_document_service, "load_text", lambda _: "")
+        detail = blob_document_service.get_document_detail(transcript_path)
+        assert detail["media_path"] == expected_media_path
+        assert detail["is_audio"] is True
+
+    def test_no_media_without_source_file(self, monkeypatch):
+        monkeypatch.setattr(blob_document_service, "load_json", lambda _: {})
+        monkeypatch.setattr(blob_document_service, "load_text", lambda _: "")
+        detail = blob_document_service.get_document_detail("2026/11/03/note_transcript.json")
+        assert detail["media_path"] is None
+        assert detail["is_audio"] is False
+        assert detail["is_video"] is False
+
     def test_builds_media_metadata(self, monkeypatch):
         transcript = {
             "sourceFile": "meeting.mp4",

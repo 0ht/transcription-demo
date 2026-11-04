@@ -3,6 +3,8 @@ import json
 import base64 
 import uuid  
 from typing import Dict, Optional,List
+import mimetypes
+from pathlib import Path
   
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, UploadFile, File   
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response   
@@ -10,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel  
 from starlette.concurrency import run_in_threadpool
 from starlette.templating import Jinja2Templates  
+from azure.core.exceptions import ResourceExistsError, ResourceModifiedError, ResourceNotFoundError
   
 from modules.realtime_session import RealtimeMeetingSession  
 from modules.meeting_manager import MeetingManager  
@@ -29,14 +32,19 @@ process_ocr_from_blob,
 list_ocr_results,
 load_ocr_result_text,
 delete_uploaded_file,
-delete_ocr_result
+delete_ocr_result,
+get_ocr_result_source,
+load_ocr_source,
+OCR_SUPPORTED_EXTS
 )
 
 from modules.blob_document_service import (  
     list_transcripts,  
     get_document_detail,  
     load_media,  
-    upload_source_file
+    upload_source_file,
+    list_source_uploads,
+    SOURCE_EXTS
 )  
 from modules.document_rag_service import rag_answer_for_document  
 
@@ -274,11 +282,11 @@ async def websocket_audio_ingest(websocket: WebSocket, session_id: str):
   
         while True:  
             message = await websocket.receive()  
+            if message["type"] == "websocket.disconnect":
+                break
   
             if "bytes" in message and message["bytes"] is not None:  
                 chunk = message["bytes"]  
-                print(f"[ws] bytes received: {len(chunk)}, head={list(chunk[:16])}")  
-  
                 await session.ingest_audio_chunk(chunk)  
   
                 await websocket.send_json({  
@@ -334,6 +342,7 @@ async def get_transcript(session_id: str, request: Request):
         "session_id": session_id,  
         "running": session.running,  
         "audio_chunk_count": session.audio_chunk_count,  
+        "last_error": session.last_error,
   
         "events": events,  
         "full_text": full_text,  
@@ -803,8 +812,13 @@ async def ocr_page(request: Request):
 async def upload_ocr_file(request: Request, file: UploadFile = File(...)):  
     require_admin(request)  
     data = await file.read()  
-    saved_name = await run_in_threadpool(upload_file_to_ocr_input, file.filename, data)  
-    return {"status": "ok", "file_name": saved_name}  
+    try:
+        saved_name = await run_in_threadpool(upload_file_to_ocr_input, file.filename, data)
+        return {"status": "ok", "file_name": saved_name, "processing_status": "queued"}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except ResourceExistsError as error:
+        raise HTTPException(status_code=409, detail="同名ファイルがあります。再度アップロードしてください。") from error
 
 
 
@@ -824,7 +838,9 @@ async def run_ocr(req: OCRRunRequest, request: Request):
     require_admin(request) 
     try:  
         result_blob = await run_in_threadpool(process_ocr_from_blob, req.blob_name)  
-        return {"status": "ok", "result_blob_name": result_blob}  
+        return {"status": "ok", "result_blob_name": result_blob, "processing_status": "completed"}
+    except ResourceModifiedError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except Exception as e:  
         raise HTTPException(status_code=500, detail=f"OCR failed: {str(e)}")  
     
@@ -847,9 +863,26 @@ async def get_ocr_result(blob_name: str, request: Request):
         return {  
             "name": blob_name,  
             "text": text,  
+            "source_blob_name": await run_in_threadpool(get_ocr_result_source, blob_name),
         }  
     except Exception as e:  
         raise HTTPException(status_code=404, detail=f"result not found: {str(e)}")
+
+
+@app.get("/api/ocr/source/{blob_name:path}")
+async def get_ocr_source(blob_name: str, request: Request):
+    require_admin(request)
+    if Path(blob_name).suffix.lower() not in OCR_SUPPORTED_EXTS:
+        raise HTTPException(status_code=400, detail="元文書の非対応形式です。")
+    try:
+        data = await run_in_threadpool(load_ocr_source, blob_name)
+        media_type = mimetypes.guess_type(blob_name)[0] or "application/octet-stream"
+        return Response(
+            content=data, media_type=media_type,
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
+    except ResourceNotFoundError as error:
+        raise HTTPException(status_code=404, detail="元文書が見つかりません。") from error
 
  
   
@@ -955,6 +988,11 @@ async def api_document_upload(request: Request, files: List[UploadFile] = File(.
             uploaded.append({  
                 "name": file.filename,  
                 "uploaded": saved_path,  
+                "processing_status": (
+                    "queued" if Path(saved_path).suffix.lower() in
+                    SOURCE_EXTS
+                    else "failed"
+                ),
             })  
   
         if not uploaded:  
@@ -970,6 +1008,19 @@ async def api_document_upload(request: Request, files: List[UploadFile] = File(.
         raise  
     except Exception as e:  
         raise HTTPException(status_code=500, detail=f"upload failed: {str(e)}")  
+
+
+@app.get("/api/documents/uploads")
+async def api_document_uploads(request: Request):
+    require_admin(request)
+    try:
+        items = await run_in_threadpool(list_source_uploads)
+        return {"items": [
+            {**item, "last_modified": serialize_blob_dt(item["last_modified"])}
+            for item in items
+        ]}
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"status list failed: {error}") from error
     
 
 @app.get("/api/documents/detail")  
@@ -1053,6 +1104,8 @@ async def api_document_media(request: Request, media_path: str):
         }  
         media_type = media_type_map.get(ext, "application/octet-stream")  
         return Response(content=media, media_type=media_type)  
+    except ResourceNotFoundError as error:
+        raise HTTPException(status_code=404, detail="元のメディアファイルが見つかりません。") from error
     except Exception as e:  
         raise HTTPException(status_code=500, detail=f"media load failed: {str(e)}")  
     

@@ -1,6 +1,7 @@
 #modules/blob_document_service.py
 import json  
 import os  
+import posixpath
 from datetime import datetime  
 from typing import Optional  
   
@@ -11,6 +12,7 @@ from modules.config import (
     BLOB_CONNECTION_STRING,  
     STORAGE_ACCOUNT_NAME,  
 )  
+from modules.processing_status import read_status, status_metadata
   
 # 必要に応じて config.py に追加してください  
 CONTAINER_INPUT = os.getenv("CONTAINER_INPUT", "input")  
@@ -21,6 +23,7 @@ ACCOUNT_URL = f"https://{STORAGE_ACCOUNT_NAME}.blob.core.windows.net"
   
 AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".wma"}  
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".webm", ".mkv"}  
+SOURCE_EXTS = AUDIO_EXTS | {".txt", ".md", ".json", ".vtt"}
   
 SPEAKER_COLORS = [  
     "#4a9eff", "#ff6b6b", "#51cf66", "#ffd43b",  
@@ -135,8 +138,9 @@ def get_document_detail(transcript_path: str) -> dict:
   
     media_path = None  
     if source_file:  
-        parts = transcript_path.split("/")  
-        media_path = "/".join(parts[:3]) + "/" + source_file if len(parts) >= 3 else source_file  
+        media_path = posixpath.join(
+            posixpath.dirname(transcript_path), posixpath.basename(source_file)
+        )
   
     return {  
         "transcript_path": transcript_path,  
@@ -166,5 +170,45 @@ def upload_source_file(filename: str, data: bytes) -> str:
     blob_name = f"{now.year:04d}/{now.month:02d}/{now.day:02d}/{safe_name}"  
   
     blob = svc.get_blob_client(CONTAINER_INPUT, blob_name)  
-    blob.upload_blob(data, overwrite=True)  
+    ext = os.path.splitext(safe_name)[1].lower()
+    metadata = status_metadata(
+        "queued" if ext in SOURCE_EXTS else "failed",
+        error="" if ext in SOURCE_EXTS else
+        "非対応形式です。動画は音声を抽出してからアップロードしてください。",
+    )
+    blob.upload_blob(data, overwrite=True, metadata=metadata)
     return blob_name  
+
+
+def list_source_uploads() -> list[dict]:
+    svc = get_blob_service()
+    items = {}
+    for container_name in (CONTAINER_PROCESSED, CONTAINER_INPUT):
+        container = svc.get_container_client(container_name)
+        for blob in container.list_blobs(include=["metadata"]):
+            metadata = blob.metadata or {}
+            status = read_status(
+                metadata, default="queued" if container_name == CONTAINER_INPUT else "unknown"
+            )
+            items[blob.name] = {
+                "name": os.path.basename(blob.name),
+                "path": blob.name,
+                "size": blob.size,
+                "last_modified": blob.last_modified,
+                **status,
+            }
+
+    legacy = [item for item in items.values() if item["status"] == "unknown"]
+    if legacy:
+        outputs = {blob.name for blob in svc.get_container_client(CONTAINER_OUTPUT).list_blobs()}
+        for item in legacy:
+            prefix = os.path.splitext(item["path"])[0]
+            error_path = f"{prefix}_error.json"
+            result_path = f"{prefix}_transcript.json"
+            if error_path in outputs:
+                payload = load_json(error_path)
+                item.update(status="failed", error=payload.get("error", "処理に失敗しました。"))
+            elif result_path in outputs:
+                item.update(status="completed", result_blob_name=result_path)
+
+    return sorted(items.values(), key=lambda item: item["last_modified"], reverse=True)

@@ -1,8 +1,11 @@
 """functions/function_app.py の純粋ロジックに対する単体テスト。"""
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
+import requests
 
 import function_app
 
@@ -84,17 +87,78 @@ class TestOutputPrefix:
 
 
 @pytest.mark.unit
-class TestBlobUrl:
-    def test_builds_full_https_url(self):
-        # Act
-        url = function_app._blob_url("input", "2026/07/03/x.wav")
+class TestPrivateSpeech:
+    @pytest.mark.parametrize("duration", [1234567, 7199999, 7200000])
+    def test_streams_audio_and_preserves_output_contract(self, monkeypatch, duration):
+        blob = Mock()
+        blob.get_blob_properties.return_value.size = 4
+        blob.download_blob.return_value.readinto.side_effect = lambda stream: stream.write(b"RIFF")
+        service = Mock()
+        service.get_blob_client.return_value = blob
+        monkeypatch.setattr(function_app, "_blob_svc", lambda: service)
+        monkeypatch.setattr(function_app, "_speech_headers", lambda: {"Authorization": "Bearer test"})
+        response = Mock()
+        response.json.return_value = {
+            "durationMilliseconds": duration,
+            "phrases": [{"speaker": 0, "text": "hello", "offsetMilliseconds": 1234001,
+                         "durationMilliseconds": 566}],
+        }
 
-        # Assert
-        assert url == f"{function_app.STORAGE_URL}/input/2026/07/03/x.wav"
+        def post(url, *, params, headers, data, timeout):
+            assert url.endswith("/speechtotext/transcriptions:transcribe")
+            assert params == {"api-version": "2025-10-15"}
+            assert headers["Content-Type"].startswith("multipart/form-data; boundary=")
+            assert timeout == (30, 900)
+            assert json.loads(data.fields["definition"])["diarization"]["enabled"] is True
+            payload = data.to_string()
+            assert b"RIFF" in payload
+            assert b"contentUrls" not in payload and b"audioUrl" not in payload
+            return response
 
-    def test_uses_configured_storage_account(self):
-        assert function_app.STORAGE_URL.startswith("https://")
-        assert function_app.STORAGE_URL.endswith(".blob.core.windows.net")
+        monkeypatch.setattr(function_app.requests, "post", post)
+        if duration == 7200000:
+            with pytest.raises(function_app.InvalidAudioError, match="2 hours"):
+                function_app.transcribe_audio("folder/meeting.wav")
+            return
+        result = function_app.transcribe_audio("folder/meeting.wav")
+        assert result["sourceFile"] == "folder/meeting.wav"
+        assert result["duration"] == function_app._iso_duration_ms(duration)
+        assert result["segments"] == [{
+            "speaker": "Speaker 0", "text": "hello",
+            "startTime": "PT1234.001S", "endTime": "PT1234.567S",
+        }]
+
+    @pytest.mark.parametrize("size", [0, 250_000_000, 250_000_001])
+    def test_rejects_empty_or_oversized_audio_before_download(self, monkeypatch, size):
+        blob = Mock()
+        blob.get_blob_properties.return_value = SimpleNamespace(size=size)
+        service = Mock()
+        service.get_blob_client.return_value = blob
+        monkeypatch.setattr(function_app, "_blob_svc", lambda: service)
+        with pytest.raises(function_app.InvalidAudioError):
+            function_app.transcribe_audio("test.wav")
+        blob.download_blob.assert_not_called()
+
+    @pytest.mark.parametrize("status", [400, 401, 403, 413, 415, 422, 429, 500])
+    def test_surfaces_speech_errors_and_only_retries_transient_failures(self, monkeypatch, status):
+        blob = Mock()
+        blob.get_blob_properties.return_value.size = 1
+        blob.download_blob.return_value.readinto.side_effect = lambda stream: stream.write(b"x")
+        service = Mock()
+        service.get_blob_client.return_value = blob
+        monkeypatch.setattr(function_app, "_blob_svc", lambda: service)
+        monkeypatch.setattr(function_app, "_speech_headers", lambda: {})
+        response = Mock(status_code=status, text="service error")
+        response.raise_for_status.side_effect = requests.HTTPError("failed")
+        monkeypatch.setattr(function_app.requests, "post", lambda *args, **kwargs: response)
+        expected = requests.HTTPError if status in (429, 500) else function_app.InvalidAudioError
+        with pytest.raises(expected):
+            function_app.transcribe_audio("test.wav")
+
+    @pytest.mark.parametrize("value", [-1, 1.2, True, None])
+    def test_rejects_invalid_timestamps(self, value):
+        with pytest.raises(ValueError):
+            function_app._iso_duration_ms(value)
 
 
 @pytest.mark.unit

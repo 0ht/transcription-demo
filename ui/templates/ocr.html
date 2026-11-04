@@ -20,7 +20,7 @@
   </header>  
   
   <div class="app-shell" style="grid-template-columns: 360px minmax(0, 1fr);">  
-    <aside class="left-sidebar" style="width:360px; min-width:360px;">  
+    <aside class="left-sidebar upload-sidebar" style="width:360px; min-width:360px;">
       <div class="sidebar-section">  
         <div class="sidebar-section-header">  
           <h2>OCR操作</h2>  
@@ -35,6 +35,8 @@
         </div>  
   
         <label>アップロード済み</label>  
+        <div class="small">待機中のファイルをクリックしてOCRを実行します。</div>
+        <div id="ocrStatus" class="small" role="status" aria-live="polite"></div>
         <div id="uploadList" class="history-list"></div>  
       </div>  
     </aside>  
@@ -56,9 +58,19 @@
           <div id="resultList" class="history-list" style="height:220px;"></div>  
         </div>  
   
-        <div style="margin-top:16px;">  
-          <label for="ocrResultPreview">プレビュー</label>  
-          <textarea id="ocrResultPreview" rows="20" readonly></textarea>  
+        <div class="ocr-comparison">
+          <section class="ocr-comparison-pane">
+            <h2>元文書</h2>
+            <div id="ocrSourceName" class="small">未選択</div>
+            <div id="ocrSourcePreview" class="ocr-source-preview">
+              <div class="empty-box">ファイルまたはOCR結果を選択してください。</div>
+            </div>
+            <a id="ocrSourceDownload" target="_blank" rel="noopener" hidden>元文書を開く / 保存</a>
+          </section>
+          <section class="ocr-comparison-pane">
+            <label for="ocrResultPreview">OCR結果（抽出テキスト）</label>
+            <textarea id="ocrResultPreview" rows="20" readonly></textarea>
+          </section>
         </div>  
   
         <div class="button-row" style="margin-top:12px;">  
@@ -69,6 +81,7 @@
     </main>  
   </div>  
   
+  <script src="/static/processing-status.js"></script>
   <script src="/static/ocr.js"></script>  
 </body>  
 </html>  

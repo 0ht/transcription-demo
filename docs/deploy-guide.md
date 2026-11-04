@@ -17,10 +17,14 @@ azd auth login
 # 2. azd 環境初期化（プロジェクトルートで実行、環境名は dev/stg/prod 等）
 azd init -e dev
 
-# 3. インフラ作成 + アプリデプロイ（約 5〜10 分）
+# 3. Foundry Agent Service が使用するリソースプロバイダーを登録
+az provider register --namespace Microsoft.App --wait
+az provider register --namespace Microsoft.ContainerService --wait
+
+# 4. インフラ作成 + アプリデプロイ（約 5〜10 分）
 azd up
 
-# 4. 出力された Endpoint URL をブラウザで開いて動作確認
+# 5. 出力された Endpoint URL をブラウザで開いて動作確認
 ```
 
 ---
@@ -80,7 +84,7 @@ transcription-demo/       ← プロジェクトルート（ここで全コマ�
 flowchart TB
     User([ユーザー / 外部システム])
 
-    subgraph Storage["Azure Blob Storage / PNA=Enabled + Deny + Trusted Services"]
+    subgraph Storage["Azure Blob Storage / PNA=Disabled + Private Endpoint"]
         Input[("input")]
         Output[("output")]
         Processed[("processed")]
@@ -96,7 +100,7 @@ flowchart TB
     end
 
     subgraph AI["AI Services kind=AIServices, MI"]
-        Speech["Speech Batch v3.2 / contentUrls=plain blob URL / channels=[0] + diarization"]
+        Speech["Speech Fast API / multipart audio upload / diarization"]
     end
 
     subgraph UI["Container Apps / FastAPI UI / MI"]
@@ -110,7 +114,7 @@ flowchart TB
     QT --> Branch
     Branch -- 音声 --> Speech
     Branch -- テキスト --> TextExtract
-    Speech -. Trusted Services / resourceAccessRules + MI RBAC .-> Input
+    QT -. Private Endpoint / MI / multipart .-> Speech
     Speech --> Output
     TextExtract --> Output
     QT -- 元ファイル移動 --> Processed
@@ -125,17 +129,17 @@ flowchart TB
 | アクセス元 | アクセス手段 | 認証 |
 |---|---|---|
 | Functions → Storage Blob/Queue | Private Endpoint | MI + Storage Blob/Queue Data Contributor |
-| AI Services (Speech Batch) → Storage Blob | **Trusted Services**（`bypass=AzureServices` + `resourceAccessRules`） | MI + Storage Blob Data Reader |
+| Functions → Speech Fast Transcription | **Private Endpoint**、音声本体を multipart で直接送信 | MI + Cognitive Services Speech User |
 | Container Apps (UI) → Storage Blob/Queue | **Private Endpoint**（ACA の VNet 統合 → Private DNS Zone で PE に名前解決） | MI + Storage Blob/Queue Data Reader |
-| User → UI | Public HTTPS（`allowedIpRanges` で社内 IP のみに制限） | なし（「10. 今後の展望」参照、Entra ID 認証追加予定） |
+| User → UI | Public HTTPS（`allowedIpRanges` で追加制限可） | Entra ID ログイン + アプリ内の明示的な権限割当 |
 
 > **Storage のセキュリティポスチャ**
-> - `publicNetworkAccess: Enabled` ＋ `defaultAction: Deny` ＋ `bypass: AzureServices`（パブリック EP は開けているが ACL ですべて拒否）
+> - `publicNetworkAccess: Disabled` ＋ `defaultAction: Deny`
 > - `allowSharedKeyAccess: false`（SAS / アカウントキー一切使わず Entra ID 認証のみ）
-> - `resourceAccessRules` で AI Services リソース ID を Trusted Service として登録
-> - これにより Speech Batch は **プレーン blob URL（SAS 不要）** でアクセス可能
+> - Speech に Blob URL は渡さず、Functions が Private Endpoint で読み取って直接送信
+> - Speech のための `resourceAccessRules` や AI アカウントの Blob Reader は不要
 >
-> ⚠️ **`publicNetworkAccess: Disabled` にしない**: Speech Batch Transcription は AI Services のパブリックエンドポイントから Source URL を fetch するため、ストレージ側を `Disabled` にすると Trusted Access (`resourceAccessRules`) が機能せず `InvalidData: The recordings URI contains invalid data.` で失敗します。
+> Batch API の URL pull は廃止しました。Storage を開放したり、組織ポリシーを例外化したりしないでください。
 
 ### RAG（AIに質問）機能のアクセスパス
 
@@ -155,7 +159,7 @@ UI には、表示中の文字起こしを対象に自然言語で質問でき�
 |---------|----------|------|
 | Resource Group | `rg-transcription-{env}` | |
 | VNet + 4 Subnets | `vnet-transcription-{env}` | snet-functions / snet-aca / snet-privateendpoints / snet-agent。4 subnet は VNet の `subnets` プロパティで原子的に作成 |
-| Storage (データ) | `sttranscriptiondata{env}` | **`publicNetworkAccess=Enabled`** + `defaultAction=Deny` + Trusted Services bypass + `allowSharedKeyAccess=false`（パブリック EP は公開するが ACL で全拒否、Speech のみ `resourceAccessRules` で許可。`Disabled` だと Speech Batch Trusted Access が機能しないため） |
+| Storage (データ) | `sttranscriptiondata{env}` | **`publicNetworkAccess=Disabled`** + `defaultAction=Deny` + `allowSharedKeyAccess=false`。Functions / UI は Private Endpoint 経由 |
 | Storage (Functions ランタイム) | `sttranscriptionfunc{env}` | **`publicNetworkAccess=Disabled`** / Flex Consumption 要件 (Blob+Table+Queue PE) / azd デプロイ時のみ hooks で一時開放 |
 | Azure Functions (Flex Consumption) | `func-transcription-{env}-{hash}` | `publicNetworkAccess=Disabled` / VNet 統合 / MI |
 | AI Services (Foundry 親リソース) | `ais-transcription-{env}` | `kind=AIServices` / `disableLocalAuth=true` / MI / **`networkInjections`（`scenario=agent`）で Agent Service の送信を `snet-agent` に注入**（下記注意参照） |
@@ -163,7 +167,7 @@ UI には、表示中の文字起こしを対象に自然言語で質問でき�
 | Azure OpenAI | `oai-transcription-{env}` | RAG 用。`publicNetworkAccess=Disabled` + PE / `disableLocalAuth=true` / `gpt-4.1-mini` + `text-embedding-3-large` をデプロイ / MI |
 | Azure AI Search | `srch-transcription-{env}-{hash}` | RAG 用。既定リージョンは `eastus`。`publicNetworkAccess=Disabled` + 主リージョン側 PE / MI 認証 / indexer による統合ベクトル化 |
 | Container Registry (Premium) | `acrtranscription{env}` | Premium SKU で PE サポート |
-| Container App (FastAPI UI) | `ca-transcription-ui-{env}` | MI / `allowedIpRanges` で Ingress 制限可（認証は未実装、今後追加予定） |
+| Container App (FastAPI UI) | `ca-transcription-ui-{env}` | MI / Entra ID 組み込み認証 / object ID による管理者割当 / `allowedIpRanges` で追加制限可 |
 | Event Grid System Topic | `evgt-blob-transcription-{env}` | Storage Queue (`blob-events`) に配信 |
 | Log Analytics / App Insights | `log-` / `appi-transcription-{env}` | AMPLS 経由。**ingestion=PrivateOnly**（テレメトリ送信は Private Endpoint 経由のみ） / **query=Open**（PoC のため Azure Portal の Logs ブレード ・ ローカル PC から KQL 可能、本番時は PrivateOnly へ切り替え） |
 | Private Endpoints + DNS Zones | 各リソースに対応 | blob/queue/table/cognitive/sites/azurecr/monitor |
@@ -171,7 +175,7 @@ UI には、表示中の文字起こしを対象に自然言語で質問でき�
 
 > ⚠️ **Foundry の送信 VNet 統合（network injection）について**
 > AI Services（Foundry）アカウントには `networkInjections`（`scenario: 'agent'`）を設定し、`snet-agent`（`10.0.5.0/24`・`Microsoft.App/environments` 委任・/27 以上）へ **Foundry Agent Service の送信トラフィックを注入**します。
-> - **対象は Agent Service の送信のみ。** 本システムの Batch Transcription（Speech）・OpenAI 推論の送信は対象外で、引き続き Microsoft バックボーン経由（Storage は Trusted Service 認可）です。現時点で Agent Service は未使用のため、これは**将来の Agent 利用に向けた基盤**の位置づけです。
+> - **対象は Agent Service の送信のみ。** Speech Fast API の呼び出しは Functions の VNet 統合と AI Services の Private Endpoint を使用します。現時点で Agent Service は未使用のため、これは**将来の Agent 利用に向けた基盤**の位置づけです。
 > - **`networkInjections` は作成時のみ設定可能（create-only / immutable）。** 既存アカウントへの後付けは非サポートで、`azd up` / `azd provision` の増分デプロイでは**スルーされます（エラーにも反映にもならない）**。反映するには Foundry アカウントの **削除 → purge → 再作成** が必要です。
 > - **リージョン制限あり。** Agent の BYO VNet 注入は対応リージョンが限定されます。未対応リージョンでは新規作成が失敗するため、再作成前にリージョン対応を必ず確認してください。
 
@@ -189,7 +193,7 @@ UI には、表示中の文字起こしを対象に自然言語で質問でき�
 | **Azure Storage Queue** | 軽量メッセージキュー | Event Grid から受け取った blob 作成イベントを Functions が順に処理するためのバッファ。失敗が続いたメッセージは自動で `*-poison` キューに退避される。 |
 | **Azure Event Grid** | イベント配信サービス | 「blob が作成された」というイベントをほぼリアルタイムに Storage Queue へ届ける。サーバーレスのトリガー基盤。 |
 | **Azure Functions (Flex Consumption)** | サーバーレス関数実行基盤 | コードだけ書けば自動でスケールする。Flex Consumption は VNet 統合 + 高速スケールに対応した新プラン。 |
-| **Azure AI Services (Speech)** | 音声認識 API | `Speech Batch Transcription v3.2` を使い、長尺音声を非同期に文字起こしする。`kind=AIServices` は Foundry の親リソース。 |
+| **Azure AI Services (Speech)** | 音声認識 API | `Speech Fast Transcription` に音声を直接送信。Queue が非同期実行を担当する。`kind=AIServices` は Foundry の親リソース |
 | **Azure AI Foundry Project** | AI 開発の論理プロジェクト | AI Services にぶら下がるプロジェクト単位。本システムでは Speech 利用時のスコープとして配置。 |
 | **Azure OpenAI** | 生成 AI / 埋め込み API | RAG 機能で利用。`gpt-4.1-mini` で回答生成、`text-embedding-3-large` でチャンク/クエリのベクトル化。 |
 | **Azure AI Search** | 全文 + ベクトル検索エンジン | 文字起こしをチャンク化して索引し、ハイブリッド/セマンティック検索で関連箇所を取得（RAG の検索基盤）。 |
@@ -205,9 +209,9 @@ UI には、表示中の文字起こしを対象に自然言語で質問でき�
 |---|---|
 | **Managed Identity (MI)** | Azure リソース自身が持つ Entra ID。パスワードや接続文字列を使わず、RBAC で他リソースにアクセスできる。本システムは全コンポーネント MI 認証。 |
 | **RBAC (Role-Based Access Control)** | 「どの ID が、どのリソースに、何を」できるかを Role で付与する仕組み。例: `Storage Blob Data Reader` を AI Services の MI に付ける。 |
-| **Trusted Services (信頼されたサービス)** | Storage が「特定の Azure サービスからのアクセスは Deny でも通す」例外設定。Speech Batch が SAS 不要で Storage を読めるのはこの仕組み。 |
+| **Trusted Services (信頼されたサービス)** | Storage のネットワーク例外。現在の音声処理はこの仕組みに依存せず、Functions が Private Endpoint で読み取る |
 | **disableLocalAuth / allowSharedKeyAccess=false** | アカウントキーや API キーでの認証を完全に無効化し、Entra ID のみ許可する設定。 |
-| **SAS (Shared Access Signature)** | 期限付き署名 URL。本システムでは使用しない（Trusted Services + RBAC で代替）。 |
+| **SAS (Shared Access Signature)** | 期限付き署名 URL。本システムでは音声入力に使用しない（Private Endpoint + MI を使用） |
 
 ### ツール
 
@@ -225,7 +229,7 @@ UI には、表示中の文字起こしを対象に自然言語で質問でき�
 - [マネージド ID の概要](https://learn.microsoft.com/entra/identity/managed-identities-azure-resources/overview)
 - [Azure RBAC の概要](https://learn.microsoft.com/azure/role-based-access-control/overview)
 - [Azure Functions Flex Consumption プラン](https://learn.microsoft.com/azure/azure-functions/flex-consumption-plan)
-- [Speech Batch Transcription](https://learn.microsoft.com/azure/ai-services/speech-service/batch-transcription)
+- [Speech Fast Transcription](https://learn.microsoft.com/azure/ai-services/speech-service/fast-transcription-create)
 - [Storage の信頼されたサービス](https://learn.microsoft.com/azure/storage/common/storage-network-security#grant-access-to-trusted-azure-services)
 
 ---
@@ -537,7 +541,7 @@ az functionapp config appsettings list -n $funcName -g $rg --output table `
 
 💡 **Container Apps の Ingress**: 外部公開された HTTPS エンドポイント。`<app>.<env>.<region>.azurecontainerapps.io` の FQDN が自動払い出され、TLS 証明書も自動管理されます。`allowedIpRanges` パラメータで社内 IP のみに絞ることも可能です。
 
-> ⚠️ **現時点でユーザー認証は未実装です。** `allowedIpRanges` による IP 制限のみで保護されているため、本番運用前に「15. 現状と今後の本番展開時の対応」に記載の Microsoft Entra ID 認証を追加してください。
+> UI は Entra ID へサインインしてから使用します。403 が出る場合、現在のユーザーの object ID が `UI_ADMIN_USER_IDS` に登録されているか、所属グループ・ロールに権限があるか確認してください。設定方法はセクション 15 を参照してください。
 
 ```powershell
 # Container App の状態確認
@@ -611,7 +615,8 @@ az storage account show -n $stName --query "networkRuleSet.defaultAction" -o tsv
 Azure に接続せず、ローカルで完結する**純粋ロジックの単体テスト**を `tests/` に用意しています。
 
 **何をテストしているか**
-- Functions: 出力パス生成（`YYYY/MM/DD/...`）、Blob URL 組み立て、テキスト/JSON 抽出（Blob はモック）
+- Functions: 出力パス、テキスト/JSON 抽出、音声ストリーミング、250 MB 境界、時刻変換、Speech エラー処理
+- 認可: Entra の object ID による明示的な管理者割当と未認証アクセスの拒否
 - UI: 検索フィルタの生成とクォートのエスケープ、ドキュメント ID 生成、文字起こしのチャンク分割ロジック、話者色・ログからのファイル名抽出
 
 **実行方法**（プロジェクトルートで）
@@ -619,6 +624,7 @@ Azure に接続せず、ローカルで完結する**純粋ロジックの単体
 # uv が一時環境を作成し、依存関係を導入して実行
 uv run --python 3.11 `
   --with-requirements requirements-test.txt `
+  --with-requirements functions/requirements.txt `
   --with-requirements ui/requirements.txt `
   pytest
 ```
@@ -636,19 +642,13 @@ Azure リソースへの接続は不要で、外部依存（Blob/OpenAI/Search�
 Storage Account の `input` コンテナにファイルをアップロードし、  
 Event Grid → Queue → Functions → output/processed の流れを検証します。
 
-> **注意**: データ Storage は `publicNetworkAccess=Enabled` だが `defaultAction=Deny` でパブリックエンドポイントを ACL 全拒否しているため、CLI からのアップロードには**クライアント IP を一時許可**する必要があります（Speech Batch の Trusted Access を生かすため `publicNetworkAccess=Disabled` にしてはいけません）。テスト完了後はセクション 11 で IP ルールを必ず削除してください。
+> **注意**: データ Storage は `publicNetworkAccess=Disabled` です。サインインした管理者が UI からアップロードするか、VNet/VPN 接続済みの実行環境から以下の CLI 手順を使用してください。IP 許可の追加だけでは閉域 Storage に接続できません。Public Access を有効化して試験しないでください。
 
 ```powershell
-# データ Storage のファイアウォールに自分の IP を許可追加
+# VNet/VPN 接続と Private DNS による名前解決を確認
 $rg = (azd env get-value AZURE_RESOURCE_GROUP)
 $stName = (azd env get-value AZURE_DATA_STORAGE_ACCOUNT_NAME)
-$myIp = (Invoke-RestMethod -Uri 'https://api.ipify.org')
-
-Write-Host "Adding IP: $myIp to $stName firewall..."
-az storage account network-rule add -g $rg --account-name $stName --ip-address $myIp --output none
-Write-Host "Waiting 15s for propagation..."
-Start-Sleep -Seconds 15
-Write-Host "Done. IP added."
+Resolve-DnsName "$stName.blob.core.windows.net"
 ```
 
 ```powershell
@@ -749,7 +749,7 @@ az storage queue metadata show --name blob-events --account-name $stName --auth-
 
 ## 11. クリーンアップ（テスト IP の除去）
 
-動作確認が完了したら、セクション 9 で一時追加した IP ルールを削除し、Storage を `resourceAccessRules` のみを許可する状態に戻します（`publicNetworkAccess=Enabled` + `defaultAction=Deny` はそのまま維持：Speech Batch Trusted Access に必要）。
+過去の手順で追加した IP 許可があれば削除します。データ Storage の `publicNetworkAccess=Disabled` と `defaultAction=Deny` は維持してください。
 
 ```powershell
 # テスト用 IP ルールの削除
@@ -759,7 +759,7 @@ $myIp = (Invoke-RestMethod -Uri 'https://api.ipify.org')
 
 Write-Host "Removing IP: $myIp from $stName firewall..."
 az storage account network-rule remove -g $rg --account-name $stName --ip-address $myIp --output none
-Write-Host "Done. Public IP allow list cleared. Storage continues to allow only AI Services (Trusted Service)."
+Write-Host "Done. Keep Storage publicNetworkAccess Disabled."
 ```
 
 ---
@@ -865,6 +865,15 @@ az storage message peek --queue-name blob-events-poison --account-name $stName -
 
 ブラウザのマイク音声は `ui/static/app.js` で **24 kHz / 16 bit / mono PCM** に変換し、`/ws/audio/{session_id}` へ送信します。Realtime API の transcription delta は増分断片のため、サーバーは確定イベントまで順番に連結して partial transcript として返します。server VAD が発話終端を自動検出するため、通常利用では手動 commit は不要です。
 
+`REALTIME_MODEL=gpt-realtime` は接続・VAD のセッションを提供し、
+`INPUT_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe` が入力音声を文字起こしします。
+`create_response=false` のため GPT の自動応答生成は行いません。
+Whisper の旧デプロイは 1 RPM（このリージョンの割当上限 3 RPM）で連続発話に不足したため、
+新しい入力モデルは GlobalStandard / capacity 10（実環境で 1,000 RPM / 10,000 TPM）に変更しました。
+これらの上限は別々に適用されるため、同時会話数に応じて両方を監視してください。
+旧環境の `WHISPER_MODEL` は互換用のフォールバックですが、新しいデプロイは
+`INPUT_TRANSCRIPTION_MODEL` を使用します。
+
 デプロイ後は、短い日本語発話で次を確認してください。
 
 - `/api/session/start` が HTTP 200 を返す
@@ -872,11 +881,11 @@ az storage message peek --queue-name blob-events-poison --account-name $stName -
 - 発話中の partial が累積表示され、確定後に最終 transcript へ移る
 - transcript events に `error` がない
 
-💡 **Speech Batch Transcription**: 長尺音声を非同期でまとめて文字起こしする Speech API。投入時に `contentUrls`（音声 blob の URL 配列）を渡すと、内部ジョブが進み完了後に結果 JSON が取得できます。本システムは v3.2 を利用。
+💡 **Speech Fast Transcription**: Functions が音声本体を multipart で送る API（`2025-10-15`）。Queue による非同期実行を維持します。運用上限は **250 MB 未満・2 時間未満**。大きい録音は投入前に分割してください。サイズ超過はダウンロード前に拒否し、長さや形式の不正はサービスエラーを保存します。自動切り捨ては行いません。
 
 💡 **`ffprobe` / `ffmpeg`**: メディアファイルの解析（`ffprobe`）と変換（`ffmpeg`）を行う OSS ツール群。`winget install Gyan.FFmpeg` で導入可能。
 
-### Speech Batch Transcription がサポートする音声形式
+### Speech Fast Transcription がサポートする音声形式
 
 | 項目 | サポート範囲 |
 |---|---|
@@ -889,7 +898,7 @@ az storage message peek --queue-name blob-events-poison --account-name $stName -
 
 ### `InvalidData: The recordings URI contains invalid data` の原因切り分け
 
-このエラーは **Speech が URL は取得できたが内容を受け付けなかった** 場合に発生します（ネットワーク・RBAC は正常）。
+これは旧 Batch API の URL pull 経路で発生するエラーです。新構成で表示される場合は古い Functions がデプロイされていないか確認してください。Fast API の形式エラーは、サービスが返した HTTP ステータスと本文をエラーマーカーで確認します。
 
 ```powershell
 # ローカルにファイルを取得後、ffprobe で実体を確認（要 ffmpeg インストール: winget install Gyan.FFmpeg）
@@ -907,14 +916,14 @@ ffprobe -v error -show_streams -show_format <file>.mp3
 ### 確実に通る形式への変換（推奨フォールバック）
 
 ```powershell
-# 16 kHz / 16 bit / mono PCM WAV — Speech Batch が確実に受け付ける形式
+# 16 kHz / 16 bit / mono PCM WAV
 ffmpeg -i input.mp3 -ac 1 -ar 16000 -sample_fmt s16 output.wav
 ```
 
 > **将来の自動化**: Functions に `pydub` + `ffmpeg` を組み込み、Speech 投入前に WAV へ変換するパスを Stage 2 で検討予定。
 
 📚 **参考資料**
-- [Speech Batch Transcription REST API v3.2](https://learn.microsoft.com/azure/ai-services/speech-service/batch-transcription)
+- [Speech Fast Transcription REST API](https://learn.microsoft.com/rest/api/speechtotext/transcriptions/transcribe?view=rest-speechtotext-2025-10-15)
 - [サポートされる音声形式](https://learn.microsoft.com/azure/ai-services/speech-service/batch-transcription-audio-data)
 - [FFmpeg 公式ドキュメント](https://ffmpeg.org/documentation.html)
 
@@ -927,6 +936,11 @@ ffmpeg -i input.mp3 -ac 1 -ar 16000 -sample_fmt s16 output.wav
 | 症状 | 対処 |
 |------|------|
 | `azd provision` でエラー | `az deployment sub what-if` で Bicep テンプレートの問題を確認 |
+| AI Services が `AccountIsNotSucceeded`（`Failed`）で失敗 | `az deployment operation group list -g <RG> -n ai` で最初の作成失敗を調べる。Agent capability host がプロバイダー未登録で失敗した場合、`Microsoft.App` と `Microsoft.ContainerService` の登録完了後、既存アカウントに Bicep と同じ構成を再適用して状態を確認する。再デプロイの事前検証だけでは元の原因が表示されない場合があるため、即座に削除・purge しない |
+| Foundry Project 作成が `RequestConflict: Another operation is in progress` で失敗 | 同じ AI Services アカウントの Project・モデル・Private Endpoint を並列更新しない。本リポジトリは Project → Chat → Embedding → Realtime → 入力文字起こしモデル → Private Endpoint の順に依存関係を設定。進行中の処理が完了してから、最新テンプレートで `azd provision` を再実行する |
+| Container Apps 環境作成が `SubscriptionNotRegisteredForFeature`（`Microsoft.Network/AllowBringYourOwnPublicIpAddress`）で失敗 | `az feature register --namespace Microsoft.Network --name AllowBringYourOwnPublicIpAddress` を実行し、`az feature show --namespace Microsoft.Network --name AllowBringYourOwnPublicIpAddress --query properties.state -o tsv` が `Registered` になってから `az provider register --namespace Microsoft.Network --wait` を実行する。その後 `azd provision` を再試行する |
+| Container Apps が `ManagedEnvironmentNotReadyForAppCreation`（環境が `Failed`）で失敗 | 先行する環境作成エラーの原因を解消する。同じ構成の PUT で再適用できる場合もあるが、`Succeeded` 表示だけでは復旧完了としない。IP 割当・UI revision の Ready・HTTP 疎通まで確認する。再適用後も IP 未割当・revision 未作成なら Azure サポートでの調査、または承認を得た対象環境の再作成を検討する。原因未解決のまま環境や subnet を削除しない |
+| 初回 UI のプレースホルダーに接続できない／本アプリ配置後に起動しない | 公開プレースホルダーはポート `80`、本アプリは `8000` を使用する。`container-apps.bicep` は使用するイメージに応じて Ingress の `targetPort` を切り替える。`azd deploy` は既存ポートを引き継ぐため、UI の `postdeploy` hook でも `8000` に更新する。アプリ配置後は `targetPort=8000` と HTTP 疎通を確認する |
 | `Virtual network resource not found` | subnet を VNet とは別の child resource として並行作成しない。本リポジトリの `network.bicep` は4 subnet を VNet の `properties.subnets` に含め、1回の PUT で作成する |
 | Search が `InsufficientResourcesAvailable` | `azd env set AZURE_SEARCH_LOCATION <利用可能なリージョン>` を実行して Search だけを別リージョンへ配置し、`azd provision` を再実行する |
 | Search projection が key analyzer を要求 | `documents.id` を `searchable: true`、`analyzer: keyword` とする。projection target の key はこの組み合わせが必須 |
@@ -936,9 +950,13 @@ ffmpeg -i input.mp3 -ac 1 -ar 16000 -sample_fmt s16 output.wav
 | `azd deploy` で ACR push 失敗 | ACR の Public Access が一時開放されているか確認 |
 | hook が `AZURE_SUBSCRIPTION_ID が設定されていません` で失敗 | セクション 4 の手順で `azd env get-values` を同じ PowerShell プロセスへ読み込み、デプロイを再実行する |
 | Realtime 認識結果が発話中に末尾の断片しか表示されない | `ui/modules/realtime_session.py` が transcription delta を上書きせず累積していることを確認し、最新 UI revision をデプロイする |
+| 最初の発話しか認識されない | `conversation.item.input_audio_transcription.failed` のコードと入力モデルの RPM / TPM を確認。旧 Whisper は 1 RPM で `RateLimitReached` を起こした。新構成では `gpt-4o-mini-transcribe` を使用し、失敗をマイク状態へ表示する |
+| 切断後も録音中の表示が残る | 最新 UI では WebSocket 切断やバックエンド終了でマイクを停止し、再開・会話再開始を案内する。デプロイ後はページを再読み込みして新しい会話を開始する |
 | ファイルアップロード後に output が出ない | UI の「処理状況」タブで poison queue とエラーログを確認（セクション 13） |
 | `Transcription failed: ... InvalidData ...` | 音声ファイルのコーデック不適合。`ffprobe` で確認し WAV に変換（セクション 14） |
-| Speech が `Failed: Forbidden` / `AuthorizationFailure` | Storage の `resourceAccessRules` に AI Services ID が登録されているか、AI Services MI に `Storage Blob Data Reader` が付与されているか確認 |
+| Speech が HTTP `401` / `403` | Functions の MI に AI Services 上の `Cognitive Services Speech User` があるか、トークンの audience と Private DNS / endpoint を確認する。Speech の Storage 権限や SAS は不要 |
+| UI の履歴取得が `{"detail":"forbidden"}` | Speech のエラーではなく UI の認可エラー。URL を開き直して Entra ID へサインインし、ユーザーの object ID が `UI_ADMIN_USER_IDS` に設定されているか確認する |
+| データ Storage が `Disabled` | 現在の正常な設定。旧 Batch URL pull を使わず、Functions から音声を直接送る Fast API を使用する |
 | 音声ファイルの文字起こしに失敗（その他） | AI Services の RBAC (`Cognitive Services Speech User`) を確認 |
 | UI が表示されない | Container App の Ingress FQDN とプロビジョニング状態を確認 |
 | `azd down` 後に Search または参照先が残る | `LockedSPLResourceFound` の有無を確認し、最新の `predown` hook で `azd down --purge` を再実行する。`az group delete` で hook を迂回しない |
@@ -981,10 +999,10 @@ azd provision
 |----------|----------|
 | **基盤** | Bicep + azd による IaC、`rg-transcription-{env}` 単位の環境分離 |
 | **ネットワーク** | VNet `10.0.0.0/16` + 3 サブネット、Storage / ACR / AI Services / Functions / Monitor の Private Endpoint、Private DNS Zone |
-| **Storage** | データ Storage は `publicNetworkAccess=Enabled` + `defaultAction=Deny`（パブリック EP は ACL で全拒否、Trusted Services bypass で AI Services のみ SAS なしアクセス） / `allowSharedKeyAccess=false`。Functions ランタイム用 Storage は `publicNetworkAccess=Disabled` |
+| **Storage** | データ / Functions ランタイムとも `publicNetworkAccess=Disabled`。データ用は共有キー・匿名アクセスも無効。音声取得は Private Endpoint + Functions MI |
 | **コンピュート** | Functions Flex Consumption（VNet 統合）、Container Apps（VNet 統合・外部 Ingress） |
 | **ID / RBAC** | 全コンポーネント Managed Identity、`disableLocalAuth=true`（AI Services）、azd 実行者本人にも開発・運用ロール自動付与 |
-| **音声書き起こし** | Speech Batch Transcription v3.2、Queue Trigger による非同期処理、try/finally でジョブ削除 |
+| **音声書き起こし** | Speech Fast API `2025-10-15`、Queue Trigger による非同期処理、音声の直接アップロード |
 | **監視** | Application Insights + Log Analytics、AMPLS を **ingestion=PrivateOnly / query=Open** でデプロイ（PoC 用、詳細は §15.2 参照）、UI から KQL でエラー / poison キュー可視化 |
 | **コンテナステスチャ** | UI Dockerfile は非 root（UID 10001）で実行、Python 依存関係は `requirements.txt` で完全バージョン固定 |
 | **デプロイ運用** | azd hooks で Functions App / Functions Storage / ACR の `publicNetworkAccess` を自動開閉 |
@@ -993,9 +1011,9 @@ azd provision
 
 以下は要件定義に記載があるか、本番セキュリティ上必須となる項目です。**本番展開前に必ず対応してください**。
 
-#### 🔐 (a) Microsoft Entra ID によるユーザー認証（**最優先**）
+#### 🔐 (a) Microsoft Entra ID によるユーザー認証
 
-現状 UI は `allowedIpRanges` による IP 制限のみで保護されており、ユーザー個人の認証は行っていません。Container Apps の組み込み認証（Easy Auth 相当）で Entra ID 認証を有効化してください。
+Container Apps の組み込み認証を Bicep で構成済みです。`AAD_CLIENT_ID` を設定した環境では未認証アクセスを同一テナントの Entra ID ログインへ転送します。未設定の場合も、アプリ内の権限チェックは匿名ユーザーへアクセスを許可しません。`TEST_GROUP=admin` による匿名開放で 403 を回避しないでください。
 
 **想定アーキテクチャ**
 
@@ -1007,23 +1025,20 @@ azd provision
         FastAPI UI（X-MS-CLIENT-PRINCIPAL ヘッダーで ID 情報受領）
 ```
 
-**実装手順（概要）**
+**新しい環境の設定**
 
-1. **App Registration を作成**：`az ad app create --display-name transcription-ui-{env} --sign-in-audience AzureADMyOrg`
-2. **Identifier URI / リダイレクト URI を設定**：`api://<appId>` と `https://<fqdn>/.auth/login/aad/callback`
-3. **Client Secret を発行** → azd 環境変数（`AAD_CLIENT_ID` / `AAD_CLIENT_SECRET` / `AAD_TENANT_ID`）に登録
-4. **Bicep に `Microsoft.App/containerApps/authConfigs@2024-03-01` を追加**：
-   - `unauthenticatedClientAction: RedirectToLoginPage`
-   - `identityProviders.azureActiveDirectory` で App Registration を参照
-   - `clientSecretSettingName` で Container App のシークレットを参照
-5. **`azd provision` を再実行** → 認証が有効化される
+1. 同一テナントのアプリ登録を作り、Web リダイレクト URI を `https://<fqdn>/.auth/login/aad/callback` に設定します。ID token の発行も有効にし、対応するサービスプリンシパルを作成します。
+2. `AAD_CLIENT_ID` と `AAD_CLIENT_SECRET` を azd 環境へ設定します。シークレットは `@secure()` パラメーターで Container App の secret に渡します。ローカルの `.azure` は非追跡のまま維持し、値をログやコミットに含めないでください。
+3. 管理者の Entra オブジェクト ID を `UI_ADMIN_USER_IDS` にカンマ区切りで設定します。UPN やメールではなくディレクトリの object ID を使います。
+4. `azd provision` / `azd deploy` を実行します。署名済み ID 情報は Easy Auth の `X-MS-CLIENT-PRINCIPAL` から取得します。未割当ユーザーには権限を付与しません。
+5. ブラウザでサインインし、履歴の取得・管理者画面を確認します。アプリ登録作成権限がない場合はテナント管理者へ依頼してください。
 
 **検討事項**
 
 - **アクセス制御の単位**：個人単位 / Entra ID グループ単位（`allowedGroups` で制御）
 - **多要素認証（MFA）**：Conditional Access で強制
 - **FastAPI 側での ID 利用**：`X-MS-CLIENT-PRINCIPAL` ヘッダーから userPrincipalName を取得し操作ログに記録
-- **Client Secret の更新運用**：24 ヶ月期限のため Key Vault + Managed Identity への移行も検討
+- **Client Secret の更新運用**：今回作成した資格情報は 1 年期限です。期限前に更新し、azd 環境と Container App に反映してください。Key Vault / フェデレーションへの移行も検討してください。
 
 📚 [Container Apps の認証・許可](https://learn.microsoft.com/azure/container-apps/authentication) ／ [Microsoft Entra プロバイダー](https://learn.microsoft.com/azure/container-apps/authentication-entra) ／ [Easy Auth クライアントプリンシパル](https://learn.microsoft.com/azure/app-service/configure-authentication-user-identities)
 

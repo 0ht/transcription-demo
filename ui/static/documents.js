@@ -1,5 +1,49 @@
 let selectedTranscriptPath = null;  
 let selectedDetail = null;  
+let previousUploadStates = new Map();
+let uploadRefresh = null;
+
+async function loadSourceUploads() {
+  if (uploadRefresh) return uploadRefresh;
+  uploadRefresh = (async () => {
+    const data = await fetchJSON("/api/documents/uploads");
+    const items = data.items || [];
+    const box = document.getElementById("sourceUploadList");
+    box.replaceChildren();
+    let completed = false;
+    for (const item of items) {
+      const row = document.createElement("div");
+      row.className = "history-item";
+      const name = document.createElement("strong");
+      name.textContent = item.name;
+      row.appendChild(name);
+      row.appendChild(createProcessingStatus(item));
+      if (item.status === "completed" && item.result_blob_name) {
+        row.onclick = () => {
+          selectedTranscriptPath = item.result_blob_name;
+          loadDocumentDetail(item.result_blob_name);
+        };
+      }
+      box.appendChild(row);
+      if (item.status === "completed" && previousUploadStates.get(item.path) !== "completed") {
+        completed = true;
+      }
+    }
+    if (!items.length) box.textContent = "アップロード済みファイルはありません";
+    previousUploadStates = new Map(items.map(item => [item.path, item.status]));
+    document.getElementById("sourceUploadMessage").textContent = "5秒ごとに自動更新";
+    if (completed) await loadDocuments();
+  })();
+  try {
+    await uploadRefresh;
+  } finally {
+    uploadRefresh = null;
+  }
+}
+
+function showUploadStatusError(error) {
+  document.getElementById("sourceUploadMessage").textContent = `ステータス取得失敗: ${error.message}`;
+}
   
 function todayStr() {  
   const d = new Date();  
@@ -122,15 +166,28 @@ function renderDetail(detail) {
   const mediaWrap = document.getElementById("mediaWrap");  
   mediaWrap.innerHTML = "";  
   
-  if (detail.media_path) {  
+  if (detail.media_path && (detail.is_audio || detail.is_video)) {
     const qs = new URLSearchParams({ media_path: detail.media_path });  
     const url = `/api/documents/media?${qs.toString()}`;  
-  
-    if (detail.is_audio) {  
-      mediaWrap.innerHTML = `<audio controls style="width:100%;" src="${url}"></audio>`;  
-    } else if (detail.is_video) {  
-      mediaWrap.innerHTML = `<video controls style="width:100%; max-height:320px;" src="${url}"></video>`;  
-    }  
+    const player = document.createElement(detail.is_audio ? "audio" : "video");
+    player.controls = true;
+    player.preload = "metadata";
+    player.style.width = "100%";
+    if (detail.is_video) player.style.maxHeight = "320px";
+    const errorMessage = document.createElement("div");
+    errorMessage.className = "processing-error";
+    errorMessage.setAttribute("role", "alert");
+    errorMessage.hidden = true;
+    player.addEventListener("error", () => {
+      errorMessage.textContent = "メディアを再生できません。元ファイルの取得に失敗したか、ブラウザーが対応していない形式です。";
+      errorMessage.hidden = false;
+    });
+    player.addEventListener("loadedmetadata", () => {
+      errorMessage.textContent = "";
+      errorMessage.hidden = true;
+    });
+    player.src = url;
+    mediaWrap.append(player, errorMessage);
   }  
   
   document.getElementById("downloadJsonBtn").onclick = () => {  
@@ -249,7 +306,7 @@ async function uploadDocumentFile() {
       "",  
       ...(data.items || []).map(x => `- ${x.name} → ${x.uploaded}`),  
       "",  
-      "Azure Functions により文字起こしが開始されます。完了後に一覧へ表示されます。"  
+      "アップロード後のステータスは下の一覧で自動更新されます。"
     ];  
   
     uploadStatus.textContent = lines.join("\n");  
@@ -257,9 +314,7 @@ async function uploadDocumentFile() {
   
     fileInput.value = "";  
   
-    setTimeout(() => {  
-      loadDocuments();  
-    }, 3000);  
+    await loadSourceUploads().catch(showUploadStatusError);
   } catch (e) {  
     uploadStatus.textContent = `アップロード失敗: ${e.message}`;  
     setLoadingMessage(`アップロード失敗: ${e.message}`);  
@@ -270,7 +325,10 @@ async function uploadDocumentFile() {
 }  
   
 document.getElementById("searchDocumentsBtn").addEventListener("click", loadDocuments);  
-document.getElementById("refreshDocumentsBtn").addEventListener("click", loadDocuments);  
+document.getElementById("refreshDocumentsBtn").addEventListener("click", () => {
+  loadDocuments();
+  loadSourceUploads().catch(showUploadStatusError);
+});
 document.getElementById("runRagBtn").addEventListener("click", runDocumentRag);  
   
 const uploadBtn = document.getElementById("uploadDocumentBtn");  
@@ -282,3 +340,5 @@ document.getElementById("dateFrom").value = daysAgoStr(30);
 document.getElementById("dateTo").value = todayStr();  
   
 loadDocuments();  
+loadSourceUploads().catch(showUploadStatusError);
+pollProcessingStatus(loadSourceUploads, showUploadStatusError);
