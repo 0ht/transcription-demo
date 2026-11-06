@@ -1,5 +1,9 @@
 import os  
 import json  
+import hashlib
+import re
+from email.utils import format_datetime
+from urllib.parse import quote
 import base64 
 import uuid  
 from typing import Dict, Optional,List
@@ -7,12 +11,13 @@ import mimetypes
 from pathlib import Path
   
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, UploadFile, File   
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response   
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles  
 from pydantic import BaseModel  
 from starlette.concurrency import run_in_threadpool
 from starlette.templating import Jinja2Templates  
 from azure.core.exceptions import ResourceExistsError, ResourceModifiedError, ResourceNotFoundError
+from azure.core import MatchConditions
   
 from modules.realtime_session import RealtimeMeetingSession  
 from modules.meeting_manager import MeetingManager  
@@ -41,10 +46,11 @@ OCR_SUPPORTED_EXTS
 from modules.blob_document_service import (  
     list_transcripts,  
     get_document_detail,  
-    load_media,  
+    get_media_blob,
     upload_source_file,
     list_source_uploads,
-    SOURCE_EXTS
+    SOURCE_EXTS,
+    MAX_UPLOAD_BYTES,
 )  
 from modules.document_rag_service import rag_answer_for_document  
 
@@ -930,6 +936,9 @@ async def documents_page(request: Request):
         name="documents.html",  
         context={  
             "request": request,  
+            "max_upload_bytes": MAX_UPLOAD_BYTES,
+            "documents_js_version": hashlib.sha256(Path("static/documents.js").read_bytes()).hexdigest(),
+            "documents_css_version": hashlib.sha256(Path("static/style.css").read_bytes()).hexdigest(),
         },  
     )  
 
@@ -977,14 +986,24 @@ async def api_document_upload(request: Request, files: List[UploadFile] = File(.
         if not files:  
             raise HTTPException(status_code=400, detail="no files")  
   
-        uploaded = []  
-  
-        for file in files:  
-            data = await file.read()  
-            if not data:  
-                continue  
-  
-            saved_path = await run_in_threadpool(upload_source_file, file.filename, data)  
+        nonempty_files = []
+        for file in files:
+            size = file.size
+            if size is None:
+                size = await run_in_threadpool(file.file.seek, 0, os.SEEK_END)
+            if size > MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"{file.filename}: 1ファイルの上限は500 MB（500,000,000 bytes）です。",
+                )
+            if size:
+                nonempty_files.append(file)
+
+        uploaded = []
+
+        for file in nonempty_files:
+            await file.seek(0)
+            saved_path = await run_in_threadpool(upload_source_file, file.filename, file.file)
             uploaded.append({  
                 "name": file.filename,  
                 "uploaded": saved_path,  
@@ -1080,14 +1099,65 @@ async def api_document_download_text(request: Request, transcript_path: str):
         raise HTTPException(status_code=500, detail=f"text download failed: {str(e)}")  
     
 
-@app.get("/api/documents/media")  
-async def api_document_media(request: Request, media_path: str):  
+def _media_byte_range(value: str, size: int) -> tuple[int, int]:
+    match = re.fullmatch(r"bytes=([0-9]*)-([0-9]*)", value.strip(), re.IGNORECASE)
+    if not match or size <= 0:
+        raise ValueError("Invalid media byte range")
+    first, last = match.groups()
+    if not first:
+        if not last or int(last) <= 0:
+            raise ValueError("Invalid suffix byte range")
+        return max(0, size - int(last)), size - 1
+    start = int(first)
+    end = min(int(last), size - 1) if last else size - 1
+    if start >= size or start > end:
+        raise ValueError("Media byte range is not satisfiable")
+    return start, end
+
+
+@app.api_route("/api/documents/media", methods=["GET", "HEAD"])
+async def api_document_media(request: Request, media_path: str, download: bool = False):
     require_admin(request) 
     if not media_path:  
         raise HTTPException(status_code=400, detail="media_path is required")  
   
     try:  
-        media = await run_in_threadpool(load_media, media_path)  
+        blob = get_media_blob(media_path)
+        properties = await run_in_threadpool(blob.get_blob_properties)
+        size = properties.size
+        modified = format_datetime(properties.last_modified.astimezone(datetime.timezone.utc), usegmt=True)
+        headers = {
+            "Accept-Ranges": "bytes",
+            "ETag": properties.etag,
+            "Last-Modified": modified,
+            "Cache-Control": "private, no-cache",
+            "X-Content-Type-Options": "nosniff",
+        }
+        if download:
+            filename = quote(media_path.rsplit("/", 1)[-1], safe="")
+            headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{filename}"
+        start, end = 0, size - 1
+        status = 200
+        range_header = request.headers.get("range") if request.method == "GET" else None
+        if range_header and (
+            range_header.partition("=")[0].strip().lower() != "bytes" or "," in range_header
+        ):
+            range_header = None
+        if_range = request.headers.get("if-range")
+        if if_range and if_range not in (properties.etag, modified):
+            range_header = None
+        if range_header:
+            try:
+                start, end = _media_byte_range(range_header, size)
+            except ValueError as error:
+                raise HTTPException(
+                    status_code=416, detail="要求された再生範囲が不正です。",
+                    headers={"Content-Range": f"bytes */{size}", "Accept-Ranges": "bytes"},
+                ) from error
+            status = 206
+            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        length = max(0, end - start + 1)
+        headers["Content-Length"] = str(length)
         ext = media_path.lower().rsplit(".", 1)[-1] if "." in media_path else ""  
   
         media_type_map = {  
@@ -1103,9 +1173,21 @@ async def api_document_media(request: Request, media_path: str):
             "avi": "video/x-msvideo",  
         }  
         media_type = media_type_map.get(ext, "application/octet-stream")  
-        return Response(content=media, media_type=media_type)  
+        if request.method == "HEAD" or length == 0:
+            return Response(status_code=status, media_type=media_type, headers=headers)
+        stream = await run_in_threadpool(
+            blob.download_blob, offset=start, length=length, max_concurrency=1,
+            etag=properties.etag, match_condition=MatchConditions.IfNotModified,
+        )
+        return StreamingResponse(
+            stream.chunks(), status_code=status, media_type=media_type, headers=headers,
+        )
+    except HTTPException:
+        raise
     except ResourceNotFoundError as error:
         raise HTTPException(status_code=404, detail="元のメディアファイルが見つかりません。") from error
+    except ResourceModifiedError as error:
+        raise HTTPException(status_code=412, detail="元ファイルが更新されました。画面を再読み込みしてください。") from error
     except Exception as e:  
         raise HTTPException(status_code=500, detail=f"media load failed: {str(e)}")  
     

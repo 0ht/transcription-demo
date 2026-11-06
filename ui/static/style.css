@@ -366,6 +366,32 @@ body.history-collapsed .app-shell.sidebar-open {
   max-height: 220px;
 }
 
+.upload-progress {
+  margin-top: 12px;
+}
+
+.upload-progress progress {
+  display: block;
+  width: 100%;
+  height: 14px;
+  margin-bottom: 6px;
+  accent-color: var(--primary-hover);
+}
+
+.upload-progress[data-state="completed"] progress {
+  accent-color: #16a34a;
+}
+
+.upload-progress[data-state="failed"] progress {
+  accent-color: var(--danger);
+}
+
+#uploadStatus,
+#uploadProgressText {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .processing-status-field {
   margin-top: 6px;
 }

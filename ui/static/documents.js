@@ -179,7 +179,14 @@ function renderDetail(detail) {
     errorMessage.setAttribute("role", "alert");
     errorMessage.hidden = true;
     player.addEventListener("error", () => {
-      errorMessage.textContent = "メディアを再生できません。元ファイルの取得に失敗したか、ブラウザーが対応していない形式です。";
+      const messages = {
+        1: "メディアの読み込みが中断されました。",
+        2: "元ファイルの取得中に通信エラーが発生しました。",
+        3: "メディアをデコードできません。このブラウザーがコーデックに対応していない可能性があります。",
+        4: "このブラウザーが動画・音声形式に対応していないか、元ファイルを読み込めません。",
+      };
+      errorMessage.textContent = (messages[player.error?.code] || "メディアを再生できません。") +
+        " 元ファイルをダウンロードし、対応するブラウザーやプレーヤーで再生してください。";
       errorMessage.hidden = false;
     });
     player.addEventListener("loadedmetadata", () => {
@@ -187,7 +194,14 @@ function renderDetail(detail) {
       errorMessage.hidden = true;
     });
     player.src = url;
-    mediaWrap.append(player, errorMessage);
+    const downloadLink = document.createElement("a");
+    downloadLink.href = `${url}&download=true`;
+    downloadLink.textContent = "元ファイルをダウンロード";
+    downloadLink.download = (detail.source_file || detail.media_path).split("/").pop();
+    const downloadRow = document.createElement("div");
+    downloadRow.className = "button-row";
+    downloadRow.appendChild(downloadLink);
+    mediaWrap.append(player, errorMessage, downloadRow);
   }  
   
   document.getElementById("downloadJsonBtn").onclick = () => {  
@@ -275,18 +289,93 @@ function renderRagResult(data) {
   }  
 }  
   
-async function uploadDocumentFile() {  
+function showUploadProgress(state, message, value) {
+  const box = document.getElementById("uploadProgress");
+  const bar = document.getElementById("uploadProgressBar");
+  box.hidden = false;
+  box.dataset.state = state;
+  if (value === null) {
+    bar.removeAttribute("value");
+  } else {
+    bar.value = value;
+  }
+  document.getElementById("uploadProgressText").textContent = message;
+}
+
+function uploadDocuments(formData) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", "/api/documents/upload");
+    request.upload.addEventListener("progress", event => {
+      const sent = (event.loaded / 1_000_000).toFixed(1);
+      if (event.lengthComputable && event.total > 0) {
+        const percent = Math.min(100, Math.floor(event.loaded / event.total * 100));
+        const total = (event.total / 1_000_000).toFixed(1);
+        showUploadProgress("uploading", `送信中 ${percent}%（${sent} / ${total} MB）`, percent);
+      } else {
+        showUploadProgress("uploading", `送信中（${sent} MB送信済み）`, null);
+      }
+    });
+    request.upload.addEventListener("load", () => {
+      showUploadProgress("saving", "送信完了（100%）・サーバーに保存中...", 100);
+      setLoadingMessage("サーバーにファイルを保存中...");
+    });
+    request.addEventListener("load", () => {
+      let data;
+      try {
+        data = JSON.parse(request.responseText);
+      } catch {
+        reject(new Error(request.status >= 200 && request.status < 300
+          ? "サーバーの応答を読み取れません。ログイン状態を確認してください。"
+          : `HTTP ${request.status}: サーバーがアップロードを受け付けませんでした。`));
+        return;
+      }
+      if (request.status < 200 || request.status >= 300) {
+        reject(new Error(typeof data?.detail === "string" ? data.detail : `HTTP ${request.status}`));
+        return;
+      }
+      if (data?.status !== "ok" || !Number.isInteger(data.count) || data.count < 1 ||
+          !Array.isArray(data.items) || data.items.length !== data.count) {
+        reject(new Error("アップロード結果の形式が不正です。"));
+        return;
+      }
+      resolve(data);
+    });
+    request.addEventListener("error", () => reject(new Error("ネットワークエラーでアップロードできませんでした。")));
+    request.addEventListener("abort", () => reject(new Error("アップロードが中断されました。")));
+    request.addEventListener("timeout", () => reject(new Error("アップロードがタイムアウトしました。")));
+    request.send(formData);
+  });
+}
+
+async function uploadDocumentFile() {
   const fileInput = document.getElementById("uploadFileInput");  
   const uploadBtn = document.getElementById("uploadDocumentBtn");  
   const uploadStatus = document.getElementById("uploadStatus");  
+  if (uploadBtn.disabled) return;
   
   const files = Array.from(fileInput?.files || []);  
   if (!files.length) {  
     alert("アップロードするファイルを選択してください");  
     return;  
   }  
-  
+
+  const maxBytes = Number(fileInput.dataset.maxFileBytes);
+  const oversized = files.find(file => file.size > maxBytes);
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || oversized) {
+    const message = oversized
+      ? `${oversized.name}: 1ファイルの上限は500 MB（500,000,000 bytes）です。`
+      : "アップロード上限を取得できません。画面を再読み込みしてください。";
+    showUploadProgress("failed", message, 0);
+    uploadStatus.textContent = message;
+    setLoadingMessage(message);
+    alert(message);
+    return;
+  }
+
   uploadBtn.disabled = true;  
+  fileInput.disabled = true;
+  showUploadProgress("uploading", "送信準備中（0%）", 0);
   uploadStatus.textContent = `アップロード中: ${files.length} ファイル`;  
   setLoadingMessage(`ファイルをアップロード中... (${files.length}件)`);  
   
@@ -296,10 +385,7 @@ async function uploadDocumentFile() {
       formData.append("files", file);  
     }  
   
-    const data = await fetchJSON("/api/documents/upload", {  
-      method: "POST",  
-      body: formData,  
-    });  
+    const data = await uploadDocuments(formData);
   
     const lines = [  
       `アップロード完了: ${data.count || 0} 件`,  
@@ -310,17 +396,21 @@ async function uploadDocumentFile() {
     ];  
   
     uploadStatus.textContent = lines.join("\n");  
+    showUploadProgress("completed", "アップロード完了（100%）。文字起こしの状況は下の一覧で確認できます。", 100);
     setLoadingMessage(`アップロード完了: ${data.count || 0} 件`);  
   
     fileInput.value = "";  
   
     await loadSourceUploads().catch(showUploadStatusError);
   } catch (e) {  
+    const bar = document.getElementById("uploadProgressBar");
+    showUploadProgress("failed", `アップロード失敗: ${e.message}`, bar.hasAttribute("value") ? bar.value : 0);
     uploadStatus.textContent = `アップロード失敗: ${e.message}`;  
     setLoadingMessage(`アップロード失敗: ${e.message}`);  
     alert(e.message);  
   } finally {  
     uploadBtn.disabled = false;  
+    fileInput.disabled = false;
   }  
 }  
   

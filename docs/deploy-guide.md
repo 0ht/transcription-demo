@@ -615,7 +615,7 @@ az storage account show -n $stName --query "networkRuleSet.defaultAction" -o tsv
 Azure に接続せず、ローカルで完結する**純粋ロジックの単体テスト**を `tests/` に用意しています。
 
 **何をテストしているか**
-- Functions: 出力パス、テキスト/JSON 抽出、音声ストリーミング、250 MB 境界、時刻変換、Speech エラー処理
+- Functions: 出力パス、テキスト/JSON 抽出、音声ストリーミング、元ファイル500 MB以下とSpeech送信音声250 MB未満の境界、大容量音声のMP3変換、時刻変換、Speech エラー処理
 - 認可: Entra の object ID による明示的な管理者割当と未認証アクセスの拒否
 - UI: 検索フィルタの生成とクォートのエスケープ、ドキュメント ID 生成、文字起こしのチャンク分割ロジック、話者色・ログからのファイル名抽出
 
@@ -881,7 +881,7 @@ Whisper の旧デプロイは 1 RPM（このリージョンの割当上限 3 RPM
 - 発話中の partial が累積表示され、確定後に最終 transcript へ移る
 - transcript events に `error` がない
 
-💡 **Speech Fast Transcription**: Functions が音声本体を multipart で送る API（`2025-10-15`）。Queue による非同期実行を維持します。運用上限は **250 MB 未満・2 時間未満**。大きい録音は投入前に分割してください。サイズ超過はダウンロード前に拒否し、長さや形式の不正はサービスエラーを保存します。自動切り捨ては行いません。
+💡 **Speech Fast Transcription**: Functions が音声本体を multipart で送る API（`2025-10-15`）。Queue による非同期実行を維持します。元ファイルの運用上限は **500 MB以下・2時間未満**。動画と250 MB以上の音声はMP3へ変換し、Speechへ送る音声はこのAPIのREST仕様に合わせて250 MB未満に制限します。元ファイルのサイズ超過はダウンロード前に拒否し、長さや形式の不正はサービスエラーを保存します。自動切り捨ては行いません。
 
 💡 **`ffprobe` / `ffmpeg`**: メディアファイルの解析（`ffprobe`）と変換（`ffmpeg`）を行う OSS ツール群。`winget install Gyan.FFmpeg` で導入可能。
 
@@ -894,7 +894,24 @@ Whisper の旧デプロイは 1 RPM（このリージョンの割当上限 3 RPM
 | サンプリングレート | 8 / 16 / 32 / 44.1 / 48 kHz |
 | チャンネル | mono / stereo（diarization 利用時は mono/stereo 推奨） |
 
-> 動画ファイルは Functions の処理対象外です。`ffmpeg` などで音声トラックを対応音声形式へ変換してから `input` コンテナへ配置してください。
+> MP4 / MOV / MKV / WebM / AVIはそのままアップロードできます。Functionsは `imageio-ffmpeg==0.6.0` のプラットフォーム別wheelに同梱されたFFmpegで最初の音声トラックをMP3（64 kbps / mono / 16 kHz）へ変換し、Speechへ送信します。システムへのFFmpegインストールやブラウザー内変換は不要です。元動画は `processed` へ保存し、UIから再生できます。音声トラックなし・破損・900秒以内に変換できない動画は失敗理由を保存します。
+>
+> 元ファイルは動画を含め **1ファイル500 MB以下（500,000,000 bytes）**、音声は **2時間未満** が対象です。UIとアップロードAPIの両方でサイズを検証し、APIからBlobへはストリーム送信します。画面の進捗バーはブラウザーからサーバーへの送信率を示し、100%の後は保存完了の応答まで待機します。切り捨てず、超過は失敗として記録します。この変更は **UIとFunctionsの両方を再デプロイし、Event Gridの拡張子フィルターも更新** してください。`azd deploy` は既存のEvent Grid設定を更新しません。新規構築ではBicepが動画拡張子を設定します。既存環境は次のように通知フィルターだけを更新できます。
+
+```powershell
+$subscription = azd env get-value AZURE_SUBSCRIPTION_ID
+$rg = azd env get-value AZURE_RESOURCE_GROUP
+$environment = azd env get-value AZURE_ENV_NAME
+az eventgrid system-topic event-subscription update `
+  --subscription $subscription --resource-group $rg `
+  --system-topic-name "evgt-blob-transcription-$environment" `
+  --name evgs-blob-created `
+  --advanced-filter subject StringEndsWith `
+    .wav .mp3 .m4a .ogg .flac .wma .mp4 .mov .mkv .webm .avi .txt .md .json .vtt `
+  --output none
+```
+
+以前失敗・待機中となったMP4は、更新後に再アップロードしてください。
 
 ### `InvalidData: The recordings URI contains invalid data` の原因切り分け
 
@@ -920,7 +937,7 @@ ffprobe -v error -show_streams -show_format <file>.mp3
 ffmpeg -i input.mp3 -ac 1 -ar 16000 -sample_fmt s16 output.wav
 ```
 
-> **将来の自動化**: Functions に `pydub` + `ffmpeg` を組み込み、Speech 投入前に WAV へ変換するパスを Stage 2 で検討予定。
+> 動画と250 MB以上の音声はFunctionsで自動的にMP3へ変換します。250 MB未満の音声ファイルは再エンコードせずSpeechへ送信するため、非対応の音声コーデックは上記の方法で変換してください。
 
 📚 **参考資料**
 - [Speech Fast Transcription REST API](https://learn.microsoft.com/rest/api/speechtotext/transcriptions/transcribe?view=rest-speechtotext-2025-10-15)

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />  
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />  
   <title>Blob文書ダッシュボード</title>  
-  <link rel="stylesheet" href="/static/style.css" />  
+  <link rel="stylesheet" href="/static/style.css?v={{ documents_css_version }}" />
 </head>  
 <body>  
   <header class="app-header">  
@@ -33,14 +33,20 @@
           id="uploadFileInput"  
           type="file"  
           multiple  
+          data-max-file-bytes="{{ max_upload_bytes }}"
           accept=".wav,.mp3,.m4a,.ogg,.flac,.wma,.mp4,.avi,.mov,.webm,.mkv"  
         />  
         <div class="button-row" style="margin-top: 12px;">  
           <button id="uploadDocumentBtn">アップロード</button>  
         </div>  
-        
-        <div id="uploadStatus" class="small" style="margin-top: 12px;">  
-          Blob Storage にアップロードすると、Azure Functions が文字起こしを開始します。  
+        <div id="uploadProgress" class="upload-progress" hidden>
+          <progress id="uploadProgressBar" max="100" value="0"
+            aria-label="ファイルの送信進捗" aria-describedby="uploadProgressText"></progress>
+          <div id="uploadProgressText" class="small" role="status" aria-live="polite"></div>
+        </div>
+        <div id="uploadStatus" class="small" role="status" aria-live="polite" style="margin-top: 12px;">
+          Blob Storage にアップロードすると、Azure Functions が文字起こしを開始します。
+          MP4などの動画は自動で音声を抽出します。1ファイル500 MB以下・2時間未満に対応します。
         </div>  
         <h3 style="margin:16px 0 0;">アップロード後のステータス</h3>
         <div id="sourceUploadMessage" class="small" role="status" aria-live="polite"></div>
@@ -166,6 +172,6 @@
   </div>  
   
   <script src="/static/processing-status.js"></script>
-  <script src="/static/documents.js"></script>  
+  <script src="/static/documents.js?v={{ documents_js_version }}"></script>
 </body>  
 </html>  

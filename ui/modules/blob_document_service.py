@@ -3,10 +3,10 @@ import json
 import os  
 import posixpath
 from datetime import datetime  
-from typing import Optional  
+from typing import BinaryIO, Optional
   
 from azure.identity import DefaultAzureCredential  
-from azure.storage.blob import BlobServiceClient  
+from azure.storage.blob import BlobClient, BlobServiceClient
   
 from modules.config import (  
     BLOB_CONNECTION_STRING,  
@@ -23,7 +23,9 @@ ACCOUNT_URL = f"https://{STORAGE_ACCOUNT_NAME}.blob.core.windows.net"
   
 AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".wma"}  
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".webm", ".mkv"}  
-SOURCE_EXTS = AUDIO_EXTS | {".txt", ".md", ".json", ".vtt"}
+SOURCE_EXTS = AUDIO_EXTS | VIDEO_EXTS | {".txt", ".md", ".json", ".vtt"}
+MAX_UPLOAD_BYTES = 500_000_000
+MEDIA_CHUNK_BYTES = 1024 * 1024
   
 SPEAKER_COLORS = [  
     "#4a9eff", "#ff6b6b", "#51cf66", "#ffd43b",  
@@ -36,11 +38,15 @@ _blob_svc_instance = None
 def get_blob_service() -> BlobServiceClient:  
     global _blob_svc_instance  
     if _blob_svc_instance is None:  
+        options = {
+            "max_single_get_size": MEDIA_CHUNK_BYTES,
+            "max_chunk_get_size": MEDIA_CHUNK_BYTES,
+        }
         if BLOB_CONNECTION_STRING:  
-            _blob_svc_instance = BlobServiceClient.from_connection_string(BLOB_CONNECTION_STRING)  
+            _blob_svc_instance = BlobServiceClient.from_connection_string(BLOB_CONNECTION_STRING, **options)
         else:  
             credential = DefaultAzureCredential()  
-            _blob_svc_instance = BlobServiceClient(account_url=ACCOUNT_URL, credential=credential)  
+            _blob_svc_instance = BlobServiceClient(account_url=ACCOUNT_URL, credential=credential, **options)
     return _blob_svc_instance  
   
   
@@ -107,9 +113,9 @@ def load_text(path: str) -> str:
     )  
   
   
-def load_media(path: str) -> bytes:  
+def get_media_blob(path: str) -> BlobClient:
     svc = get_blob_service()  
-    return svc.get_blob_client(CONTAINER_PROCESSED, path).download_blob().readall()  
+    return svc.get_blob_client(CONTAINER_PROCESSED, path)
   
   
 def build_transcript_text(transcript: dict) -> str:  
@@ -162,7 +168,7 @@ def get_document_detail(transcript_path: str) -> dict:
 
 
   
-def upload_source_file(filename: str, data: bytes) -> str:  
+def upload_source_file(filename: str, data: bytes | BinaryIO) -> str:
     svc = get_blob_service()  
   
     safe_name = os.path.basename(filename)  
@@ -174,7 +180,7 @@ def upload_source_file(filename: str, data: bytes) -> str:
     metadata = status_metadata(
         "queued" if ext in SOURCE_EXTS else "failed",
         error="" if ext in SOURCE_EXTS else
-        "非対応形式です。動画は音声を抽出してからアップロードしてください。",
+        "非対応形式です。対応する音声・動画・テキストをアップロードしてください。",
     )
     blob.upload_blob(data, overwrite=True, metadata=metadata)
     return blob_name  

@@ -1,15 +1,17 @@
 """
 Azure Functions - Blob 文字起こし処理
 Queue Trigger → Fast Transcription API / テキスト抽出
-対応: 音声ファイル (.wav/.mp3/.m4a/.ogg/.flac/.wma) + テキスト (.txt/.md/.json/.vtt)
+対応: 音声 / 動画 (.mp4/.mov/.mkv/.webm/.avi) + テキスト (.txt/.md/.json/.vtt)
 """
 
 import base64
 import json
 import logging
 import os
+import subprocess
 import time
 import tempfile
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +20,7 @@ from azure.core.exceptions import ClientAuthenticationError
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
 import requests
+import imageio_ffmpeg
 from requests_toolbelt.multipart.encoder import MultipartEncoder
 
 # ---------------------------------------------------------------------------
@@ -33,10 +36,12 @@ SPEECH_LANG = os.environ.get("SPEECH_LANGUAGE", "ja-JP")
 STORAGE_URL = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net"
 
 AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".wma"}
+VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
 TEXT_EXTS = {".txt", ".md", ".json", ".vtt"}
-ALL_SUPPORTED = AUDIO_EXTS | TEXT_EXTS
+ALL_SUPPORTED = AUDIO_EXTS | VIDEO_EXTS | TEXT_EXTS
 
 MAX_RETRIES = 3
+MAX_SOURCE_BYTES = 500_000_000
 MAX_AUDIO_BYTES = 250_000_000
 MAX_AUDIO_DURATION_MS = 2 * 60 * 60 * 1000
 SPEECH_API_VERSION = '2025-10-15'
@@ -136,20 +141,71 @@ def _iso_duration_ms(milliseconds: int) -> str:
     return f"PT{seconds}.{fraction:03d}S"
 
 
+def _extract_media_audio(source: Path, destination: Path) -> None:
+    formats = {".mp4": "mov", ".mov": "mov", ".mkv": "matroska",
+               ".webm": "matroska", ".avi": "avi", ".m4a": "mov",
+               ".wav": "wav", ".mp3": "mp3", ".ogg": "ogg",
+               ".flac": "flac", ".wma": "asf"}
+    try:
+        subprocess.run(
+            [
+                imageio_ffmpeg.get_ffmpeg_exe(),
+                "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                "-protocol_whitelist", "file",
+                "-f", formats[source.suffix.lower()], "-i", str(source),
+                "-map", "0:a:0", "-vn",
+                "-ac", "1", "-ar", "16000",
+                "-codec:a", "libmp3lame", "-b:a", "64k", str(destination),
+            ],
+            check=True, capture_output=True, timeout=900,
+        )
+    except subprocess.CalledProcessError as error:
+        detail = error.stderr.decode("utf-8", errors="replace")[-2000:]
+        operation = "Video audio extraction" if source.suffix.lower() in VIDEO_EXTS else "Audio conversion"
+        raise InvalidAudioError(
+            f"{operation} failed; check that the file contains "
+            f"a supported audio track: {detail}"
+        ) from error
+    except subprocess.TimeoutExpired as error:
+        raise InvalidAudioError(
+            "Media audio conversion timed out; split the file before uploading"
+        ) from error
+
+
 def transcribe_audio(blob_name: str) -> dict:
     """Private Blob を読み、URL や SAS を渡さず音声本体を Speech に送る。"""
     blob = _blob_svc().get_blob_client(CONTAINER_INPUT, blob_name)
     size = blob.get_blob_properties().size
-    if not 0 < size < MAX_AUDIO_BYTES:
-        raise InvalidAudioError("Audio must be nonempty and smaller than 250 MB")
+    if not 0 < size <= MAX_SOURCE_BYTES:
+        raise InvalidAudioError("Media must be nonempty and no larger than 500 MB")
 
-    with tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024) as audio:
+    with ExitStack() as stack:
+        filename = Path(blob_name).name
+        needs_conversion = Path(blob_name).suffix.lower() in VIDEO_EXTS or size >= MAX_AUDIO_BYTES
+        if needs_conversion:
+            directory = Path(stack.enter_context(tempfile.TemporaryDirectory()))
+            source = directory / f"media{Path(blob_name).suffix.lower()}"
+            audio = stack.enter_context(source.open("w+b"))
+        else:
+            audio = stack.enter_context(
+                tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024)
+            )
         downloaded = blob.download_blob().readinto(audio)
         if downloaded != size:
             raise InvalidAudioError("Audio size changed during download; upload it again")
+        if needs_conversion:
+            audio.close()
+            destination = directory / "audio.mp3"
+            _extract_media_audio(source, destination)
+            if not 0 < destination.stat().st_size < MAX_AUDIO_BYTES:
+                raise InvalidAudioError(
+                    "Extracted audio must be nonempty and smaller than 250 MB"
+                )
+            audio = stack.enter_context(destination.open("rb"))
+            filename = Path(filename).with_suffix(".mp3").name
         audio.seek(0)
         form = MultipartEncoder(fields={
-            "audio": (Path(blob_name).name, audio, "application/octet-stream"),
+            "audio": (filename, audio, "application/octet-stream"),
             "definition": json.dumps({
                 "locales": [SPEECH_LANG],
                 "diarization": {"enabled": True, "maxSpeakers": 35},
