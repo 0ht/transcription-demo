@@ -204,6 +204,29 @@ def get_blob_client(container_name: str, blob_name: str):
     container = get_blob_container_client(container_name)  
     return container.get_blob_client(blob_name)  
 
+from azure.storage.queue import QueueServiceClient 
+
+QUEUE_BLOB_EVENTS = os.getenv("QUEUE_BLOB_EVENTS", "blob-events")  
+
+
+def get_queue_service_client() -> QueueServiceClient:  
+    if BLOB_CONNECTION_STRING:  
+        return QueueServiceClient.from_connection_string(BLOB_CONNECTION_STRING)  
+  
+    if not STORAGE_ACCOUNT_NAME:  
+        raise RuntimeError("Missing STORAGE_ACCOUNT_NAME for managed identity queue access")  
+  
+    return QueueServiceClient(  
+        account_url=f"https://{STORAGE_ACCOUNT_NAME}.queue.core.windows.net",  
+        credential=credential,  
+    )  
+  
+  
+def get_queue_client(queue_name: str):  
+    service = get_queue_service_client()  
+    return service.get_queue_client(queue_name)  
+ 
+
 
 # グループ設定
 TEST_GROUP = os.getenv("TEST_GROUP", "").strip().lower()  # admin / user / ""  

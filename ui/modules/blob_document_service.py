@@ -165,7 +165,39 @@ def get_document_detail(transcript_path: str) -> dict:
         "is_video": ext in VIDEO_EXTS,  
     }  
 
+from modules.config import QUEUE_BLOB_EVENTS, get_queue_client
+from azure.core.exceptions import ResourceExistsError  
 
+def ensure_queue(queue_name: str):  
+    queue_client = get_queue_client(queue_name)  
+    try:  
+        queue_client.create_queue()  
+    except ResourceExistsError:  
+        pass  
+    return queue_client  
+
+
+def enqueue_blob_created_event(blob_name: str) -> None:  
+    """  
+    既存 Azure Functions が期待している Event Grid 風メッセージを  
+    Queue Storage に投入する。  
+    """  
+    queue = ensure_queue(QUEUE_BLOB_EVENTS)  
+  
+    message = {  
+        "topic": f"/subscriptions/local/resourceGroups/local/providers/Microsoft.Storage/storageAccounts/{STORAGE_ACCOUNT_NAME}",  
+        "subject": f"/blobServices/default/containers/{CONTAINER_INPUT}/blobs/{blob_name}",  
+        "eventType": "Microsoft.Storage.BlobCreated",  
+        "eventTime": datetime.utcnow().isoformat() + "Z",  
+        "id": f"{blob_name}-{int(datetime.utcnow().timestamp())}",  
+        "data": {  
+            "api": "PutBlob",  
+            "url": f"https://{STORAGE_ACCOUNT_NAME}.blob.core.windows.net/{CONTAINER_INPUT}/{blob_name}",  
+        },  
+    }  
+  
+    queue.send_message(json.dumps(message, ensure_ascii=False))  
+ 
 
   
 def upload_source_file(filename: str, data: bytes | BinaryIO) -> str:
@@ -183,6 +215,7 @@ def upload_source_file(filename: str, data: bytes | BinaryIO) -> str:
         "非対応形式です。対応する音声・動画・テキストをアップロードしてください。",
     )
     blob.upload_blob(data, overwrite=True, metadata=metadata)
+    enqueue_blob_created_event(blob_name) 
     return blob_name  
 
 
