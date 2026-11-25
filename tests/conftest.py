@@ -6,8 +6,12 @@
   テスト収集より前（本ファイルのモジュールスコープ）で設定しておく。
 """
 import os
+import subprocess
 import sys
 from pathlib import Path
+
+import imageio_ffmpeg
+import pytest
 
 _ROOT = Path(__file__).resolve().parent.parent
 _FUNCTIONS_DIR = _ROOT / "functions"
@@ -21,3 +25,18 @@ for _p in (_ROOT, _FUNCTIONS_DIR, _UI_DIR, _HOOKS_DIR):
 # function_app.py が import 時に os.environ[...] で参照する必須値。
 os.environ.setdefault("DATA_STORAGE_ACCOUNT_NAME", "teststorage")
 os.environ.setdefault("AI_SERVICES_ENDPOINT", "https://test-ai.cognitiveservices.azure.com")
+
+
+@pytest.fixture
+def sample_mp4(tmp_path):
+    path = tmp_path / "sample.mp4"
+    subprocess.run(
+        [
+            imageio_ffmpeg.get_ffmpeg_exe(), "-nostdin", "-loglevel", "error",
+            "-f", "lavfi", "-i", "color=size=32x32:rate=10",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000",
+            "-t", "0.2", "-c:v", "mpeg4", "-c:a", "aac", str(path),
+        ],
+        check=True, capture_output=True, timeout=30,
+    )
+    return path

@@ -13,8 +13,6 @@ param privateDnsZoneBlobId string
 param privateDnsZoneQueueId string
 @description('Table 用 Private DNS ゾーンのリソース ID。')
 param privateDnsZoneTableId string
-@description('AI Services リソース ID。Trusted Service として Storage の resourceAccessRules に登録。空文字なら登録しない。')
-param aiServicesResourceId string = ''
 
 @description('データ用 Storage アカウント名（トークン付与済み最終名）')
 param dataStorageName string
@@ -44,24 +42,13 @@ resource dataStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   identity: { type: 'SystemAssigned' }
   properties: {
     minimumTlsVersion: 'TLS1_2'
-    // 閉域化：パブリックエンドポイントは Enabled だが defaultAction=Deny により外部からの直接アクセスは不可。
-    // Speech (Batch Transcription) は AI Services リソース ID を Trusted Service として登録（resourceAccessRules）し、
-    // Speech バックエンドが当該 AI Services 経由で発行されたジョブのみ Storage アクセスを許可する。
-    // ※ ストレージ側を publicNetworkAccess=Disabled にすると Trusted Access (resourceAccessRules) が機能せず
-    //   `InvalidData: The recordings URI contains invalid data.` で失敗するため Enabled 必須。
-    // CLI からテストアップロードする際は手動で一時 IP 許可を追加する（deploy-guide.md セクション 9 参照）。
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: 'Disabled'
     allowBlobPublicAccess: false
     allowSharedKeyAccess: false
     networkAcls: {
       defaultAction: 'Deny'
       bypass: 'AzureServices'
-      resourceAccessRules: empty(aiServicesResourceId) ? [] : [
-        {
-          tenantId: subscription().tenantId
-          resourceId: aiServicesResourceId
-        }
-      ]
+      resourceAccessRules: []
     }
   }
 }

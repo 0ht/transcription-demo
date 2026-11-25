@@ -17,13 +17,18 @@
     </div>  
   
     <div class="header-actions">  
-      <a href="/documents"><button class="secondary" type="button">文書RAG</button></a>  
-      <a href="/ocr"><button class="secondary" type="button">OCR</button></a>  
-      <button id="startConversationBtn">会話開始</button>  
-      <button id="pauseConversationBtn" class="secondary">一時停止</button>  
-      <button id="stopConversationBtn">会話終了</button>  
-      <button id="toggleTranscriptBtn" class="secondary">文字おこし</button>  
-    </div>  
+      {% if is_admin %}  
+        <a href="/documents"><button class="secondary" type="button">文書RAG</button></a>  
+        <a href="/ocr"><button class="secondary" type="button">OCR</button></a>  
+      {% endif %}  
+      
+      {% if is_authorized %}  
+        <button id="startConversationBtn">会話開始</button>  
+        <button id="pauseConversationBtn" class="secondary">一時停止</button>  
+        <button id="stopConversationBtn">会話終了</button>  
+        <button id="toggleTranscriptBtn" class="secondary">文字おこし</button>  
+      {% endif %}  
+    </div>   
   </header>  
   
   <div class="app-shell">  
@@ -46,6 +51,11 @@
   
     <!-- 中央: チャット -->  
     <main class="chat-main">  
+
+      {% if not is_authorized %}  
+        <div class="empty-box">このアプリを利用する権限がありません。</div>  
+      {% endif %}  
+
       <div class="chat-topbar">  
         <div>  
           <div class="chat-context-label">現在の対象</div>  
@@ -53,13 +63,50 @@
         </div>  
   
         <div class="chat-topbar-actions">  
-          <label for="promptSetSelect">プロンプト</label>  
-          <select id="promptSetSelect">  
-            {% for item in prompt_sets %}  
-            <option value="{{ item }}">{{ item }}</option>  
-            {% endfor %}  
-          </select>  
-        </div>  
+          {% if is_admin %}  
+            <label for="promptSetSelect">プロンプト</label>  
+            <select id="promptSetSelect">  
+              {% for item in prompt_sets %}  
+              <option value="{{ item }}">{{ item }}</option>  
+              {% endfor %}  
+            </select>  
+          
+            <button id="openPromptEditorBtn" type="button" class="secondary">  
+              確認 / 編集  
+            </button>  
+          
+            <button id="createPromptBtn" type="button" class="secondary">  
+              新規作成  
+            </button>  
+          
+            <label for="modelSelect">モデル</label>  
+            <select id="modelSelect">  
+              {% for item in model_options %}  
+              <option value="{{ item }}" {% if item == default_model %}selected{% endif %}>  
+                {{ item }}  
+              </option>  
+              {% endfor %}  
+            </select>  
+          {% elif is_user %}  
+            <div class="small">標準設定で会議支援を利用中</div>  
+          
+            <select id="promptSetSelect" hidden>  
+              <option value="default" selected>default</option>  
+            </select>  
+          
+            <select id="modelSelect" hidden>  
+              <option value="{{ default_model }}" selected>{{ default_model }}</option>  
+            </select>  
+          
+            <button id="openPromptEditorBtn" type="button" class="secondary" hidden>  
+              確認 / 編集  
+            </button>  
+          
+            <button id="createPromptBtn" type="button" class="secondary" hidden>  
+              新規作成  
+            </button>  
+          {% endif %}  
+        </div>   
       </div>  
   
       <div id="analysisCardContainer" class="analysis-card-container hidden"></div>  
@@ -117,6 +164,50 @@
     </aside>  
   </div>  
   
+
+  <div id="promptEditorModal" class="modal hidden">  
+    <div class="modal-backdrop" id="promptEditorBackdrop"></div>  
+    <div class="modal-content prompt-editor-modal">  
+      <div class="modal-header">  
+        <h3>プロンプト編集</h3>  
+        <button id="closePromptEditorBtn" type="button" class="secondary">閉じる</button>  
+      </div>  
+    
+      <div class="modal-body">  
+        <div class="form-row">  
+          <label for="promptEditorName">プロンプト名</label>  
+          <input id="promptEditorName" type="text" placeholder="例: support_v2" />  
+        </div>  
+    
+        <div class="form-row">  
+          <label for="promptEditorContent">内容</label>  
+          <textarea id="promptEditorContent" rows="18" placeholder="プロンプト本文を入力"></textarea>  
+        </div>  
+    
+        <div id="promptEditorStatus" class="prompt-editor-status"></div>  
+      </div>  
+    
+      <div class="modal-footer">  
+        <button id="savePromptBtn" type="button">保存</button>  
+      </div>  
+    </div>  
+  </div>  
+
+
+  <script>  
+    window.APP_CONTEXT = {  
+      userName: {{ user_name|tojson }},  
+      userEmail: {{ user_email|tojson }},  
+      userGroup: {{ user_group|tojson }},  
+      authSource: {{ auth_source|tojson }},  
+      isAdmin: {{ is_admin|tojson }},  
+      isUser: {{ is_user|tojson }},  
+      isAuthorized: {{ is_authorized|tojson }},  
+      defaultModel: {{ default_model|tojson }}  
+    };  
+  </script>  
   <script src="/static/app.js"></script>  
+
+
 </body>  
 </html>  

@@ -33,6 +33,7 @@ resource eventSubscription 'Microsoft.EventGrid/systemTopics/eventSubscriptions@
           key: 'subject'
           values: [
             '.wav', '.mp3', '.m4a', '.ogg', '.flac', '.wma'
+            '.mp4', '.mov', '.mkv', '.webm', '.avi'
             '.txt', '.md', '.json', '.vtt'
           ]
         }

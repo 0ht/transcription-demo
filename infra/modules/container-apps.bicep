@@ -24,6 +24,12 @@ param acrId string
 @description('UI アクセスを許可する IP レンジ（CIDR）。')
 param allowedIpRanges array
 
+param aadClientId string = ''
+param aadTenantId string = subscription().tenantId
+@secure()
+param aadClientSecret string = ''
+param uiAdminUserIds string = ''
+
 @description('Azure OpenAI のエンドポイント。')
 param azureOpenAIEndpoint string
 @description('Azure OpenAI のリソース ID。')
@@ -32,7 +38,7 @@ param azureOpenAIId string
 param azureOpenAIChatDeployment string
 @description('Azure OpenAI の Realtime モデルデプロイ名。')
 param azureOpenAIRealtimeDeployment string
-@description('Realtime 入力文字起こし用（Whisper）モデルデプロイ名。')
+@description('Realtime 入力文字起こし用モデルデプロイ名。')
 param azureOpenAITranscribeDeployment string
 @description('Azure OpenAI の API バージョン。')
 param azureOpenAIApiVersion string
@@ -106,6 +112,9 @@ module fetchLatestImage './fetch-container-image.bicep' = {
   }
 }
 
+var placeholderImage = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
+var uiImage = !empty(fetchLatestImage.outputs.containers) ? fetchLatestImage.outputs.containers[0].image : placeholderImage
+
 resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: containerAppName
   location: location
@@ -116,9 +125,15 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   properties: {
     managedEnvironmentId: cae.id
     configuration: {
+      secrets: !empty(aadClientId) ? [
+        {
+          name: 'entra-client-secret'
+          value: aadClientSecret
+        }
+      ] : []
       ingress: {
         external: true
-        targetPort: 8000
+        targetPort: uiImage == placeholderImage ? 80 : 8000
         transport: 'http'
         traffic: [
           {
@@ -158,12 +173,13 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
         {
           name: 'ui'
           // 既存があれば前回 image、なければ最軽量の公開プレースホルダー（auth 不要・サイズ小）
-          image: !empty(fetchLatestImage.outputs.containers) ? fetchLatestImage.outputs.containers[0].image : 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
+          image: uiImage
           resources: {
             cpu: json('0.5')
             memory: '1Gi'
           }
           env: [
+            { name: 'ADMIN_USER_IDS', value: uiAdminUserIds }
             { name: 'STORAGE_ACCOUNT_NAME', value: dataStorageAccountName }
             { name: 'HISTORY_STORAGE_MODE', value: 'blob' }
             { name: 'PROMPT_STORAGE_MODE', value: 'blob' }
@@ -179,7 +195,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'AOAI_API_VERSION', value: azureOpenAIApiVersion }
             { name: 'AOAI_MODEL_NAME', value: azureOpenAIChatDeployment }
             { name: 'REALTIME_MODEL', value: azureOpenAIRealtimeDeployment }
-            { name: 'WHISPER_MODEL', value: azureOpenAITranscribeDeployment }
+            { name: 'INPUT_TRANSCRIPTION_MODEL', value: azureOpenAITranscribeDeployment }
 
             { name: 'SEARCH_ENDPOINT', value: azureSearchEndpoint }
             { name: 'SEARCH_INDEX', value: azureSearchIndexName }
@@ -194,6 +210,39 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
           ]
         }
       ]
+    }
+  }
+}
+
+resource uiAuth 'Microsoft.App/containerApps/authConfigs@2024-03-01' = if (!empty(aadClientId)) {
+  parent: containerApp
+  name: 'current'
+  properties: {
+    platform: {
+      enabled: true
+    }
+    globalValidation: {
+      unauthenticatedClientAction: 'RedirectToLoginPage'
+      redirectToProvider: 'azureactivedirectory'
+    }
+    httpSettings: {
+      requireHttps: true
+    }
+    identityProviders: {
+      azureActiveDirectory: {
+        enabled: true
+        registration: {
+          clientId: aadClientId
+          clientSecretSettingName: 'entra-client-secret'
+          openIdIssuer: '${az.environment().authentication.loginEndpoint}${aadTenantId}/v2.0'
+        }
+        validation: {
+          allowedAudiences: [
+            aadClientId
+            'api://${aadClientId}'
+          ]
+        }
+      }
     }
   }
 }

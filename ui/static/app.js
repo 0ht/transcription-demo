@@ -1,4 +1,4 @@
-console.log("APP_JS_CHAT_LAYOUT_V0 LOADED");  
+console.log("APP_JS_CHAT_LAYOUT_V1 LOADED");  
   
 let currentSessionId = null;  
 let ws = null;  
@@ -16,6 +16,7 @@ let isSessionStarting = false;
 let isSessionStopping = false;  
 let isMicStarting = false;  
 let isMicRecording = false;  
+let captureError = null;
 let isAnalyzing = false;  
 let isConfirming = false;  
 let latestAnalysisData = null;  
@@ -57,7 +58,18 @@ const refreshHistoryBtn = document.getElementById("refreshHistoryBtn");
 const clearDebugInputBtn = document.getElementById("clearDebugInputBtn");  
   
 const analysisCardContainer = document.getElementById("analysisCardContainer");  
-  
+const modelSelect = document.getElementById("modelSelect");  
+
+const openPromptEditorBtn = document.getElementById("openPromptEditorBtn");  
+const createPromptBtn = document.getElementById("createPromptBtn");  
+const promptEditorModal = document.getElementById("promptEditorModal");  
+const promptEditorBackdrop = document.getElementById("promptEditorBackdrop");  
+const closePromptEditorBtn = document.getElementById("closePromptEditorBtn");  
+const promptEditorName = document.getElementById("promptEditorName");  
+const promptEditorContent = document.getElementById("promptEditorContent");  
+const promptEditorStatus = document.getElementById("promptEditorStatus");  
+const savePromptBtn = document.getElementById("savePromptBtn");  
+
 /* API */  
 async function apiGet(url) {  
   const res = await fetch(url);  
@@ -66,6 +78,20 @@ async function apiGet(url) {
     throw new Error(text);  
   }  
   return res.json();  
+} 
+
+
+async function apiPut(url, body) {  
+  const res = await fetch(url, {  
+    method: "PUT",  
+    headers: { "Content-Type": "application/json" },  
+    body: JSON.stringify(body),  
+  });  
+  const data = await res.json().catch(() => ({}));  
+  if (!res.ok) {  
+    throw new Error(data.detail || `PUT ${url} failed`);  
+  }  
+  return data;  
 }  
   
 async function apiPost(url, body = null) {  
@@ -605,9 +631,18 @@ async function refreshTranscript(silent = false) {
     }  
   
     renderTranscript(data.full_text || "", data.partial_text || "");  
-  
-    if (isMicRecording) {  
-      setMicStatus(`running=true, chunks=${data.audio_chunk_count}`);  
+
+    if (!data.running) {
+      captureError = data.last_error || "音声接続が終了しました。会話を終了して再開始してください。";
+      await stopMic();
+      closeWebSocket();
+      setMicStatus(captureError);
+    } else if (data.last_error) {
+      setMicStatus(`文字起こしエラー: ${data.last_error} (chunks=${data.audio_chunk_count})`);
+    } else if (captureError) {
+      setMicStatus(captureError);
+    } else if (isMicRecording) {
+      setMicStatus(`recording, chunks=${data.audio_chunk_count}`);
     } else if (currentSessionId) {  
       setMicStatus(`paused, chunks=${data.audio_chunk_count}`);  
     } else {  
@@ -686,9 +721,10 @@ async function analyzeWithOptionalUserPrompt(userPrompt = "") {
     const prompt_set_name = promptSetSelect.value;  
     const data = await apiPost(`/api/session/${currentSessionId}/analyze`, {  
       prompt_set_name,  
+      model_name: modelSelect.value,  
       user_instruction: userPrompt || ""  
     });  
-  
+      
     showAnalysisCard(data);  
   
     if (userPrompt && userPrompt.trim()) {  
@@ -736,6 +772,7 @@ async function sendChat() {
       const data = await apiPost(`/api/history/${viewingHistoryItemId}/chat`, {  
         message: text,  
         prompt_set_name: promptSetSelect.value,  
+        model_name: modelSelect.value,  
         use_rag: true,  
         context_mode: "history",  
         topic_id: viewingHistoryItemId  
@@ -762,6 +799,7 @@ async function sendChat() {
     if (!latestAnalysisData) {  
       const analysisData = await apiPost(`/api/session/${currentSessionId}/analyze`, {  
         prompt_set_name: promptSetSelect.value,  
+        model_name: modelSelect.value,  
         user_instruction: text  
       });  
 
@@ -786,10 +824,11 @@ async function sendChat() {
     const payload = {  
       message: text,  
       prompt_set_name: promptSetSelect.value,  
+      model_name: modelSelect.value,  
       use_rag: true,  
       context_mode: "current_transcript",  
       topic_id: null  
-    };  
+    };   
   
     const data = await apiPost(`/api/session/${currentSessionId}/chat`, payload);  
   
@@ -840,7 +879,8 @@ async function confirmCurrent() {
   
     const prompt_set_name = promptSetSelect.value;  
     const data = await apiPost(`/api/session/${currentSessionId}/confirm`, {  
-      prompt_set_name  
+      prompt_set_name,  
+      model_name: modelSelect.value  
     });  
   
     await refreshHistory();  
@@ -889,9 +929,12 @@ async function connectWebSocket() {
   
   ws = new WebSocket(wsUrl);  
   ws.binaryType = "arraybuffer";  
+  const socket = ws;
   
   await new Promise((resolve, reject) => {  
+    let opened = false;
     ws.onopen = () => {  
+      opened = true;
       console.log("ws open");  
       setMicStatus("websocket connected");  
       updateButtonStates();  
@@ -900,6 +943,11 @@ async function connectWebSocket() {
   
     ws.onmessage = (event) => {  
       console.log("ws message", event.data);  
+      const message = JSON.parse(event.data);
+      if (message.type === "error") {
+        captureError = message.message || "音声送信に失敗しました。";
+        setMicStatus(captureError);
+      }
     };  
   
     ws.onerror = (err) => {  
@@ -911,7 +959,14 @@ async function connectWebSocket() {
   
     ws.onclose = (event) => {  
       console.log("ws close", event.code, event.reason);  
-      setMicStatus("websocket closed");  
+      if (ws !== socket) return;
+      if (!opened) reject(new Error("WebSocket closed before connecting"));
+      captureError = captureError || "音声接続が切断されました。再開してください。";
+      if (isMicRecording) {
+        stopMic().then(() => setMicStatus(captureError));
+      } else {
+        setMicStatus(captureError);
+      }
       updateButtonStates();  
     };  
   });  
@@ -1030,9 +1085,14 @@ async function startMic() {
     processorNode.connect(audioContext.destination);  
   
     isMicRecording = true;  
+    captureError = null;
     setMicStatus(`recording pcm ${audioContext.sampleRate}Hz -> 24000Hz`);  
     openTranscriptSidebar();  
   } catch (e) {  
+    await stopMic();
+    closeWebSocket();
+    captureError = e.message;
+    setMicStatus(captureError);
     alert("録音開始に失敗しました\n" + e.message);  
     throw e;  
   } finally {  
@@ -1042,6 +1102,7 @@ async function startMic() {
 }  
   
 async function stopMic() {  
+  isMicRecording = false;
   try {  
     if (processorNode) {  
       try { processorNode.disconnect(); } catch (_) {}  
@@ -1340,3 +1401,135 @@ window.addEventListener("load", async () => {
   renderChatMessages();  
   updateButtonStates();  
 });  
+
+
+//モーダル系
+
+function openPromptEditorModal() {  
+  promptEditorModal.classList.remove("hidden");  
+}  
+  
+function closePromptEditorModal() {  
+  promptEditorModal.classList.add("hidden");  
+  promptEditorStatus.textContent = "";  
+}  
+
+
+async function reloadPromptSetOptions(selectedName = "") {  
+  const data = await apiGet("/api/prompt_sets");  
+  const items = data.items || [];  
+  
+  promptSetSelect.innerHTML = "";  
+  
+  for (const name of items) {  
+    const opt = document.createElement("option");  
+    opt.value = name;  
+    opt.textContent = name;  
+    if (selectedName && name === selectedName) {  
+      opt.selected = true;  
+    }  
+    promptSetSelect.appendChild(opt);  
+  }  
+  
+  if (!selectedName && items.length > 0) {  
+    promptSetSelect.value = items[0];  
+  }  
+}  
+
+
+async function openExistingPromptEditor() {  
+  const name = promptSetSelect.value;  
+  if (!name) {  
+    alert("プロンプトが選択されていません。");  
+    return;  
+  }  
+  
+  promptEditorStatus.textContent = "読み込み中...";  
+  promptEditorName.value = name;  
+  promptEditorName.readOnly = true;  
+  promptEditorContent.value = "";  
+  openPromptEditorModal();  
+  
+  try {  
+    const data = await apiGet(`/api/prompt_sets/${encodeURIComponent(name)}`);  
+    promptEditorName.value = data.name || name;  
+    promptEditorContent.value = data.content || "";  
+    promptEditorStatus.textContent = "";  
+  } catch (err) {  
+    promptEditorStatus.textContent = "";  
+    alert(`プロンプトの読み込みに失敗しました: ${err.message}`);  
+  }  
+}  
+
+
+function openCreatePromptEditor() {  
+  promptEditorName.value = "";  
+  promptEditorName.readOnly = false;  
+  promptEditorContent.value = "";  
+  promptEditorStatus.textContent = "新しいプロンプトを作成します。";  
+  openPromptEditorModal();  
+}  
+
+
+async function savePromptEditor() {  
+  const name = promptEditorName.value.trim();  
+  const content = promptEditorContent.value;  
+  
+  if (!name) {  
+    alert("プロンプト名を入力してください。");  
+    return;  
+  }  
+  
+  if (!content.trim()) {  
+    alert("プロンプト内容を入力してください。");  
+    return;  
+  }  
+  
+  savePromptBtn.disabled = true;  
+  promptEditorStatus.textContent = "保存中...";  
+  
+  try {  
+    if (promptEditorName.readOnly) {  
+      await apiPut(`/api/prompt_sets/${encodeURIComponent(name)}`, {  
+        content,  
+      });  
+    } else {  
+      await apiPost("/api/prompt_sets", {  
+        name,  
+        content,  
+      });  
+    }  
+  
+    await reloadPromptSetOptions(name);  
+    promptSetSelect.value = name;  
+  
+    promptEditorName.readOnly = true;  
+    promptEditorStatus.textContent = "保存しました。";  
+  } catch (err) {  
+    promptEditorStatus.textContent = "";  
+    alert(`保存に失敗しました: ${err.message}`);  
+  } finally {  
+    savePromptBtn.disabled = false;  
+  }  
+}  
+
+
+if (openPromptEditorBtn) {  
+  openPromptEditorBtn.addEventListener("click", openExistingPromptEditor);  
+}  
+  
+if (createPromptBtn) {  
+  createPromptBtn.addEventListener("click", openCreatePromptEditor);  
+}  
+  
+if (closePromptEditorBtn) {  
+  closePromptEditorBtn.addEventListener("click", closePromptEditorModal);  
+}  
+  
+if (promptEditorBackdrop) {  
+  promptEditorBackdrop.addEventListener("click", closePromptEditorModal);  
+}  
+  
+if (savePromptBtn) {  
+  savePromptBtn.addEventListener("click", savePromptEditor);  
+}  

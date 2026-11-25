@@ -3,7 +3,7 @@ import json
 from modules.config import aoai_client, aoai_model_fast  
   
   
-def plan_meeting_topic(conversation: str) -> dict:  
+def plan_meeting_topic(conversation: str, model_name: str = aoai_model_fast) -> dict:  
     conversation = (conversation or "").strip()  
   
     if not conversation:  
@@ -46,7 +46,7 @@ def plan_meeting_topic(conversation: str) -> dict:
 """  
   
     res = aoai_client.chat.completions.create(  
-        model=aoai_model_fast,  
+        model=model_name,  
         response_format={"type": "json_object"},  
         messages=[  
             {  

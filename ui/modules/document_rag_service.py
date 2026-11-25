@@ -6,6 +6,7 @@ from modules.llm import (
     generate_search_query,  
     answer_with_context,  
 )  
+from modules.config import aoai_model  
   
   
 def rag_answer_for_document(  
@@ -16,6 +17,7 @@ def rag_answer_for_document(
     use_query_rewrite: bool = True,  
     source_file: str = None,  
     transcript_path: str = None,  
+    model_name: str = aoai_model,  
 ) -> dict:  
     document_text = (document_text or "").strip()  
     question = (question or "").strip()  
@@ -29,11 +31,12 @@ def rag_answer_for_document(
   
     intent_summary = ""  
     if use_query_rewrite:  
-        intent_summary = summarize_question_intent(question)  
+        intent_summary = summarize_question_intent(question, model_name=model_name)  
         final_query = generate_search_query(  
             question=question,  
             current_call_summary=current_summary,  
             intent_summary=intent_summary,  
+            model_name=model_name,  
         )  
     else:  
         final_query = question  
@@ -52,6 +55,7 @@ def rag_answer_for_document(
             question=question,  
             current_call_summary=current_summary,  
             contexts=contexts,  
+            model_name=model_name,  
         )  
   
     return {  

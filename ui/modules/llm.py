@@ -33,6 +33,7 @@ def generate_meeting_feedback(
     conversation: str,  
     docs: List[Dict[str, Any]],  
     prompt_set_name: str = "default",  
+    model_name: str = aoai_model,  
     issues=None,  
     suggestions=None,  
     next_actions=None,  
@@ -76,7 +77,7 @@ def generate_meeting_feedback(
 """  
   
     res = aoai_client.chat.completions.create(  
-        model=aoai_model,  
+        model=model_name,  
         messages=[  
             {"role": "system", "content": system_prompt},  
             {"role": "user", "content": prompt},  
@@ -92,6 +93,7 @@ def generate_chat_response(
     chat_history: List[Dict[str, str]],  
     docs: List[Dict[str, Any]],  
     prompt_set_name: str = "default",  
+    model_name: str = aoai_model,  
     context_title: str = "",  
     summary: str = "",  
 ) -> str:  
@@ -133,7 +135,7 @@ def generate_chat_response(
     messages.append({"role": "user", "content": user_message})  
   
     res = aoai_client.chat.completions.create(  
-        model=aoai_model,  
+        model=model_name,  
         messages=messages,  
     )  
   
@@ -190,13 +192,13 @@ ANSWER_SYSTEM_PROMPT = """あなたは業務支援アシスタントです。
 """  
   
   
-def summarize_current_call(transcript_text: str) -> str:  
+def summarize_current_call(transcript_text: str, model_name: str = aoai_model) -> str:  
     transcript_text = (transcript_text or "").strip()  
     if not transcript_text:  
         return ""  
   
     resp = aoai_client.chat.completions.create(  
-        model=aoai_model,  
+        model=model_name,  
         messages=[  
             {"role": "system", "content": CURRENT_CALL_SUMMARY_PROMPT},  
             {"role": "user", "content": transcript_text[:12000]},  
@@ -205,13 +207,13 @@ def summarize_current_call(transcript_text: str) -> str:
     return (resp.choices[0].message.content or "").strip()  
   
   
-def summarize_question_intent(question: str) -> str:  
+def summarize_question_intent(question: str, model_name: str = aoai_model) -> str:  
     question = (question or "").strip()  
     if not question:  
         return ""  
   
     resp = aoai_client.chat.completions.create(  
-        model=aoai_model,  
+        model=model_name,  
         messages=[  
             {"role": "system", "content": INTENT_SYSTEM_PROMPT},  
             {"role": "user", "content": question},  
@@ -224,6 +226,7 @@ def generate_search_query(
     question: str,  
     current_call_summary: str,  
     intent_summary: str = "",  
+    model_name: str = aoai_model,  
 ) -> str:  
     question = (question or "").strip()  
     current_call_summary = (current_call_summary or "").strip()  
@@ -241,7 +244,7 @@ def generate_search_query(
 上記をもとに検索クエリを生成してください。"""  
   
     resp = aoai_client.chat.completions.create(  
-        model=aoai_model,  
+        model=model_name,  
         messages=[  
             {"role": "system", "content": QUERY_SYSTEM_PROMPT},  
             {"role": "user", "content": user_prompt},  
@@ -254,6 +257,7 @@ def answer_with_context(
     question: str,  
     current_call_summary: str,  
     contexts: List[Dict[str, Any]],  
+    model_name: str = aoai_model,  
 ) -> str:  
     question = (question or "").strip()  
     current_call_summary = (current_call_summary or "").strip()  
@@ -278,7 +282,7 @@ def answer_with_context(
 上記だけを根拠に回答してください。"""  
   
     resp = aoai_client.chat.completions.create(  
-        model=aoai_model,  
+        model=model_name,  
         messages=[  
             {"role": "system", "content": ANSWER_SYSTEM_PROMPT},  
             {"role": "user", "content": user_prompt},  

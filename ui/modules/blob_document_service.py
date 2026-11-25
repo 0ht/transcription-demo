@@ -1,16 +1,18 @@
 #modules/blob_document_service.py
 import json  
 import os  
+import posixpath
 from datetime import datetime  
-from typing import Optional  
+from typing import BinaryIO, Optional
   
 from azure.identity import DefaultAzureCredential  
-from azure.storage.blob import BlobServiceClient  
+from azure.storage.blob import BlobClient, BlobServiceClient
   
 from modules.config import (  
     BLOB_CONNECTION_STRING,  
     STORAGE_ACCOUNT_NAME,  
 )  
+from modules.processing_status import read_status, status_metadata
   
 # 必要に応じて config.py に追加してください  
 CONTAINER_INPUT = os.getenv("CONTAINER_INPUT", "input")  
@@ -21,6 +23,9 @@ ACCOUNT_URL = f"https://{STORAGE_ACCOUNT_NAME}.blob.core.windows.net"
   
 AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".wma"}  
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".webm", ".mkv"}  
+SOURCE_EXTS = AUDIO_EXTS | VIDEO_EXTS | {".txt", ".md", ".json", ".vtt"}
+MAX_UPLOAD_BYTES = 500_000_000
+MEDIA_CHUNK_BYTES = 1024 * 1024
   
 SPEAKER_COLORS = [  
     "#4a9eff", "#ff6b6b", "#51cf66", "#ffd43b",  
@@ -33,11 +38,15 @@ _blob_svc_instance = None
 def get_blob_service() -> BlobServiceClient:  
     global _blob_svc_instance  
     if _blob_svc_instance is None:  
+        options = {
+            "max_single_get_size": MEDIA_CHUNK_BYTES,
+            "max_chunk_get_size": MEDIA_CHUNK_BYTES,
+        }
         if BLOB_CONNECTION_STRING:  
-            _blob_svc_instance = BlobServiceClient.from_connection_string(BLOB_CONNECTION_STRING)  
+            _blob_svc_instance = BlobServiceClient.from_connection_string(BLOB_CONNECTION_STRING, **options)
         else:  
             credential = DefaultAzureCredential()  
-            _blob_svc_instance = BlobServiceClient(account_url=ACCOUNT_URL, credential=credential)  
+            _blob_svc_instance = BlobServiceClient(account_url=ACCOUNT_URL, credential=credential, **options)
     return _blob_svc_instance  
   
   
@@ -104,9 +113,9 @@ def load_text(path: str) -> str:
     )  
   
   
-def load_media(path: str) -> bytes:  
+def get_media_blob(path: str) -> BlobClient:
     svc = get_blob_service()  
-    return svc.get_blob_client(CONTAINER_PROCESSED, path).download_blob().readall()  
+    return svc.get_blob_client(CONTAINER_PROCESSED, path)
   
   
 def build_transcript_text(transcript: dict) -> str:  
@@ -135,8 +144,9 @@ def get_document_detail(transcript_path: str) -> dict:
   
     media_path = None  
     if source_file:  
-        parts = transcript_path.split("/")  
-        media_path = "/".join(parts[:3]) + "/" + source_file if len(parts) >= 3 else source_file  
+        media_path = posixpath.join(
+            posixpath.dirname(transcript_path), posixpath.basename(source_file)
+        )
   
     return {  
         "transcript_path": transcript_path,  
@@ -154,3 +164,90 @@ def get_document_detail(transcript_path: str) -> dict:
         "is_audio": ext in AUDIO_EXTS,  
         "is_video": ext in VIDEO_EXTS,  
     }  
+
+from modules.config import QUEUE_BLOB_EVENTS, get_queue_client
+from azure.core.exceptions import ResourceExistsError  
+
+def ensure_queue(queue_name: str):  
+    queue_client = get_queue_client(queue_name)  
+    try:  
+        queue_client.create_queue()  
+    except ResourceExistsError:  
+        pass  
+    return queue_client  
+
+
+def enqueue_blob_created_event(blob_name: str) -> None:  
+    """  
+    既存 Azure Functions が期待している Event Grid 風メッセージを  
+    Queue Storage に投入する。  
+    """  
+    queue = ensure_queue(QUEUE_BLOB_EVENTS)  
+  
+    message = {  
+        "topic": f"/subscriptions/local/resourceGroups/local/providers/Microsoft.Storage/storageAccounts/{STORAGE_ACCOUNT_NAME}",  
+        "subject": f"/blobServices/default/containers/{CONTAINER_INPUT}/blobs/{blob_name}",  
+        "eventType": "Microsoft.Storage.BlobCreated",  
+        "eventTime": datetime.utcnow().isoformat() + "Z",  
+        "id": f"{blob_name}-{int(datetime.utcnow().timestamp())}",  
+        "data": {  
+            "api": "PutBlob",  
+            "url": f"https://{STORAGE_ACCOUNT_NAME}.blob.core.windows.net/{CONTAINER_INPUT}/{blob_name}",  
+        },  
+    }  
+  
+    queue.send_message(json.dumps(message, ensure_ascii=False))  
+ 
+
+  
+def upload_source_file(filename: str, data: bytes | BinaryIO) -> str:
+    svc = get_blob_service()  
+  
+    safe_name = os.path.basename(filename)  
+    now = datetime.utcnow()  
+    blob_name = f"{now.year:04d}/{now.month:02d}/{now.day:02d}/{safe_name}"  
+  
+    blob = svc.get_blob_client(CONTAINER_INPUT, blob_name)  
+    ext = os.path.splitext(safe_name)[1].lower()
+    metadata = status_metadata(
+        "queued" if ext in SOURCE_EXTS else "failed",
+        error="" if ext in SOURCE_EXTS else
+        "非対応形式です。対応する音声・動画・テキストをアップロードしてください。",
+    )
+    blob.upload_blob(data, overwrite=True, metadata=metadata)
+    enqueue_blob_created_event(blob_name) 
+    return blob_name  
+
+
+def list_source_uploads() -> list[dict]:
+    svc = get_blob_service()
+    items = {}
+    for container_name in (CONTAINER_PROCESSED, CONTAINER_INPUT):
+        container = svc.get_container_client(container_name)
+        for blob in container.list_blobs(include=["metadata"]):
+            metadata = blob.metadata or {}
+            status = read_status(
+                metadata, default="queued" if container_name == CONTAINER_INPUT else "unknown"
+            )
+            items[blob.name] = {
+                "name": os.path.basename(blob.name),
+                "path": blob.name,
+                "size": blob.size,
+                "last_modified": blob.last_modified,
+                **status,
+            }
+
+    legacy = [item for item in items.values() if item["status"] == "unknown"]
+    if legacy:
+        outputs = {blob.name for blob in svc.get_container_client(CONTAINER_OUTPUT).list_blobs()}
+        for item in legacy:
+            prefix = os.path.splitext(item["path"])[0]
+            error_path = f"{prefix}_error.json"
+            result_path = f"{prefix}_transcript.json"
+            if error_path in outputs:
+                payload = load_json(error_path)
+                item.update(status="failed", error=payload.get("error", "処理に失敗しました。"))
+            elif result_path in outputs:
+                item.update(status="completed", result_blob_name=result_path)
+
+    return sorted(items.values(), key=lambda item: item["last_modified"], reverse=True)

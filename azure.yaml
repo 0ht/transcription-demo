@@ -21,6 +21,14 @@ services:
       path: ./Dockerfile
       context: .
       remoteBuild: true
+    hooks:
+      postdeploy:
+        posix:
+          shell: sh
+          run: az containerapp ingress update --name "$SERVICE_UI_RESOURCE_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --subscription "$AZURE_SUBSCRIPTION_ID" --target-port 8000 --output none
+        windows:
+          shell: pwsh
+          run: az containerapp ingress update --name "$env:SERVICE_UI_RESOURCE_NAME" --resource-group "$env:AZURE_RESOURCE_GROUP" --subscription "$env:AZURE_SUBSCRIPTION_ID" --target-port 8000 --output none
 
 hooks:
   # provision 完了後: Azure AI Search の index/indexer/skillset を作成し統合ベクトル化で取り込む

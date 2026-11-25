@@ -62,6 +62,7 @@ def decide_retrieval(
     chat_history: List[Dict[str, str]],  
     user_message: str,  
     existing_docs: List[Dict[str, Any]],  
+    model_name: str = aoai_model,  
 ) -> Dict[str, Any]:  
     logging.info("chat retrieval decision start")  
   
@@ -97,7 +98,7 @@ def decide_retrieval(
   
     try:  
         completion = aoai_client.chat.completions.create(  
-            model=aoai_model,  #TODO:レスポンスが早いモデルを選択
+            model=model_name,  
             messages=[  
                 {"role": "system", "content": RETRIEVAL_DECISION_PROMPT},  
                 {"role": "user", "content": user_content},  
@@ -113,7 +114,6 @@ def decide_retrieval(
             "search_query": (result.get("search_query") or "").strip(),  
             "reason": (result.get("reason") or "").strip(),  
         }  
-  
     except Exception:  
         logging.exception("chat retrieval decision failed")  
         # 失敗時は安全側で検索する  

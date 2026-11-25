@@ -25,6 +25,19 @@ param speechLanguage string = 'ja-JP'
 @description('UI アクセスを許可する社内 IP レンジ（CIDR 形式）')
 param allowedIpRanges array = []
 
+@description('UI の Entra ID アプリケーション ID。空文字の場合、組み込み認証を構成しない。')
+param aadClientId string = ''
+
+@description('UI の Entra ID テナント ID。')
+param aadTenantId string = subscription().tenantId
+
+@secure()
+@description('UI の Entra ID アプリケーションのシークレット。')
+param aadClientSecret string = ''
+
+@description('UI 管理者の Entra オブジェクト ID（カンマ区切り）。')
+param uiAdminUserIds string = ''
+
 // azd が自動設定するパラメータ
 #disable-next-line no-unused-params
 param principalId string = ''
@@ -106,10 +119,6 @@ module network 'modules/network.bicep' = {
   }
 }
 
-// AI Services のリソース ID を予測（Trusted Service として Storage の networkAcls.resourceAccessRules に登録するため）
-// ai.bicep 側の命名と一致させる必要があるため、同じ最終名を使う。
-var aiServicesResourceId = resourceId(subscription().subscriptionId, rg.name, 'Microsoft.CognitiveServices/accounts', aiServicesName)
-
 module storage 'modules/storage.bicep' = {
   name: 'storage'
   scope: rg
@@ -120,7 +129,6 @@ module storage 'modules/storage.bicep' = {
     privateDnsZoneBlobId: network.outputs.privateDnsZoneBlobId
     privateDnsZoneQueueId: network.outputs.privateDnsZoneQueueId
     privateDnsZoneTableId: network.outputs.privateDnsZoneTableId
-    aiServicesResourceId: aiServicesResourceId
     dataStorageName: dataStorageName
     functionsStorageName: functionsStorageName
     peDataBlobName: peDataBlobName
@@ -154,7 +162,6 @@ module ai 'modules/ai.bicep' = {
     privateDnsZoneCognitiveId: network.outputs.privateDnsZoneCognitiveId
     privateDnsZoneOpenAIId: network.outputs.privateDnsZoneOpenAIId
     privateDnsZoneServicesAiId: network.outputs.privateDnsZoneServicesAiId
-    dataStorageAccountId: storage.outputs.dataStorageAccountId
     aiServicesName: aiServicesName
     foundryProjectName: foundryProjectName
     peAiServicesName: peAiServicesName
@@ -243,6 +250,10 @@ module containerApps 'modules/container-apps.bicep' = {
     acrLoginServer: acr.outputs.acrLoginServer  
     acrId: acr.outputs.acrId  
     allowedIpRanges: allowedIpRanges  
+    aadClientId: aadClientId
+    aadTenantId: aadTenantId
+    aadClientSecret: aadClientSecret
+    uiAdminUserIds: uiAdminUserIds
     uiExists: uiExists  
     containerAppEnvName: containerAppEnvName  
     containerAppName: containerAppName  

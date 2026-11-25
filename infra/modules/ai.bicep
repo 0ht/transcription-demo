@@ -15,8 +15,6 @@ param privateDnsZoneCognitiveId string
 param privateDnsZoneOpenAIId string
 @description('Foundry / services.ai 用 Private DNS ゾーンのリソース ID。')
 param privateDnsZoneServicesAiId string
-@description('データ用 Storage アカウントのリソース ID。')
-param dataStorageAccountId string
 
 @description('Chat model deployment name')
 param chatDeploymentName string = 'gpt-5.4-mini'
@@ -42,14 +40,14 @@ param realtimeModelName string = 'gpt-realtime'
 @description('Realtime model version')
 param realtimeModelVersion string = '2025-08-28'
 
-@description('Realtime 入力文字起こし用のモデルデプロイ名（UI の WHISPER_MODEL と一致）')
-param transcribeDeploymentName string = 'whisper'
+@description('Realtime 入力文字起こし用のモデルデプロイ名（UI の INPUT_TRANSCRIPTION_MODEL と一致）')
+param transcribeDeploymentName string = 'gpt-4o-mini-transcribe'
 
 @description('文字起こしモデル名')
-param transcribeModelName string = 'whisper'
+param transcribeModelName string = 'gpt-4o-mini-transcribe'
 
 @description('文字起こしモデルバージョン')
-param transcribeModelVersion string = '001'
+param transcribeModelVersion string = '2025-12-15'
 
 @description('AI Services アカウント名（トークン付与済み最終名）')
 param aiServicesName string
@@ -115,6 +113,10 @@ resource chatDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-0
     }
     versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
   }
+  // Project とモデルの並列更新は親アカウント上で RequestConflict を起こす。
+  dependsOn: [
+    foundryProject
+  ]
 }
 
 resource embeddingDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-04-01-preview' = {
@@ -159,14 +161,14 @@ resource realtimeDeployment 'Microsoft.CognitiveServices/accounts/deployments@20
   ]
 }
 
-// Whisper モデルデプロイ（Realtime セッションの入力文字起こし用）
+// Realtime セッションの入力文字起こし用。Whisper の低い RPM 制約を避ける。
 // アカウントへの並列 PUT を避けるため realtime の後に直列化する。
 resource transcribeDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-04-01-preview' = {
   parent: aiServices
   name: transcribeDeploymentName
   sku: {
-    name: 'Standard'
-    capacity: 1
+    name: 'GlobalStandard'
+    capacity: 10
   }
   properties: {
     model: {
@@ -219,21 +221,6 @@ resource peAiServicesDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroup
       { name: 'servicesai', properties: { privateDnsZoneId: privateDnsZoneServicesAiId } }
     ]
   }
-}
-
-// RBAC: AI Services → データ Storage (Batch Transcription の入出力に必要)
-resource aiStorageBlobReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(dataStorageAccountId, aiServices.id, 'Storage Blob Data Reader')
-  scope: dataStorageResource
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1')
-    principalId: aiServices.identity.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-resource dataStorageResource 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
-  name: last(split(dataStorageAccountId, '/'))
 }
 
 output aiServicesEndpoint string = aiServices.properties.endpoint

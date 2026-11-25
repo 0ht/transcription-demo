@@ -28,6 +28,15 @@
     },
     "allowedIpRanges": {
       "value": []
+    },
+    "aadClientId": {
+      "value": "${AAD_CLIENT_ID=}"
+    },
+    "aadClientSecret": {
+      "value": "${AAD_CLIENT_SECRET=}"
+    },
+    "uiAdminUserIds": {
+      "value": "${UI_ADMIN_USER_IDS=}"
     }
   }
 }
